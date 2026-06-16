@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, PieChart, Pie, Cell, LabelList, BarChart, Bar, Legend
+  ResponsiveContainer, PieChart, Pie, Cell, Sector, LabelList, BarChart, Bar, Legend
 } from "recharts";
 
 function useWindowWidth() {
@@ -292,21 +292,36 @@ const KpiCard = ({ icon, color, label, prefix, value, sub, subColor }) => (
     <div style={{ fontSize:11, color:subColor || C.gray, marginTop:2, fontWeight:500 }}>{sub}</div>
   </div>
 );
-const Donut = ({ data, centerTop, centerBottom, size=150 }) => {
-  const outer = Math.round(size*0.47), inner = Math.round(size*0.32);
+const renderActiveSlice = (props) => {
+  const { cx, cy, innerRadius, outerRadius, startAngle, endAngle, fill } = props;
+  return <Sector cx={cx} cy={cy} innerRadius={innerRadius} outerRadius={outerRadius + 5} startAngle={startAngle} endAngle={endAngle} fill={fill} stroke="#fff" strokeWidth={2} />;
+};
+
+const Donut = ({ data, centerTop, centerBottom, size=150, unit="debitur" }) => {
+  const [active, setActive] = useState(-1);
+  const outer = Math.round(size*0.45), inner = Math.round(size*0.31);
+  const hov = active>=0 ? data[active] : null;
   return (
     <div style={{ position:"relative", width:size, height:size, flexShrink:0 }}>
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
-          <Pie data={data} dataKey="value" nameKey="legend" innerRadius={inner} outerRadius={outer} startAngle={90} endAngle={-270} stroke="none" paddingAngle={1}>
-            {data.map((d,i)=><Cell key={i} fill={d.color} />)}
+          <Pie data={data} dataKey="value" nameKey="legend" innerRadius={inner} outerRadius={outer}
+            startAngle={90} endAngle={-270} stroke="#fff" strokeWidth={1.5} paddingAngle={1}
+            activeIndex={active} activeShape={renderActiveSlice} isAnimationActive={false}
+            onMouseEnter={(_,i)=>setActive(i)} onMouseLeave={()=>setActive(-1)}>
+            {data.map((d,i)=><Cell key={i} fill={d.color} opacity={active===-1||active===i?1:0.4} style={{ transition:"opacity .15s", cursor:"pointer" }} />)}
           </Pie>
-          <Tooltip formatter={(v,n)=>[fNum(v)+" debitur", n]} />
         </PieChart>
       </ResponsiveContainer>
-      <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", pointerEvents:"none" }}>
-        <div style={{ fontSize: size>=170?19:15, fontWeight:800, color:C.text }}>{centerTop}</div>
-        <div style={{ fontSize: size>=170?12:10.5, color:C.gray }}>{centerBottom}</div>
+      <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", pointerEvents:"none", textAlign:"center", padding:"0 10px" }}>
+        {hov ? (<>
+          <div style={{ fontSize: size>=170?12.5:11, fontWeight:700, color:hov.color, lineHeight:1.2 }}>{hov.legend || hov.label}</div>
+          <div style={{ fontSize: size>=170?20:16, fontWeight:800, color:C.text }}>{fNum(hov.value)}</div>
+          <div style={{ fontSize:10, color:C.gray }}>{unit}</div>
+        </>) : (<>
+          <div style={{ fontSize: size>=170?19:15, fontWeight:800, color:C.text }}>{centerTop}</div>
+          <div style={{ fontSize: size>=170?12:10.5, color:C.gray }}>{centerBottom}</div>
+        </>)}
       </div>
     </div>
   );
@@ -763,7 +778,7 @@ function ActionPlan({ m, perms }) {
         <div style={card}>
           <CardTitle>Status Penyelesaian</CardTitle>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <Donut data={statusData} centerTop={fNum(plans.length)} centerBottom="Action" />
+            <Donut data={statusData} centerTop={fNum(plans.length)} centerBottom="Action" unit="action" />
             <div style={{ flex:1 }}>
               {statusData.map((d,i)=>(
                 <div key={i} style={{ display:"flex", alignItems:"center", gap:8, fontSize:12.5, padding:"5px 0" }}>
