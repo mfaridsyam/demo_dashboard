@@ -145,14 +145,16 @@ const ROLES = {
 };
 
 const PERIODE = {
-  "Mei 2026": { f:1.00, date:"31 Mei 2026", months:["Des '25","Jan '26","Feb '26","Mar '26","Apr '26","Mei '26"] },
-  "Apr 2026": { f:0.972, date:"30 Apr 2026", months:["Nov '25","Des '25","Jan '26","Feb '26","Mar '26","Apr '26"] },
-  "Mar 2026": { f:0.945, date:"31 Mar 2026", months:["Okt '25","Nov '25","Des '25","Jan '26","Feb '26","Mar '26"] },
+  "Mei 2026": { f:1.00, date:"31 Mei 2026", months:["Des '25","Jan '26","Feb '26","Mar '26","Apr '26","Mei '26"], months12:["Jun '25","Jul '25","Agu '25","Sep '25","Okt '25","Nov '25","Des '25","Jan '26","Feb '26","Mar '26","Apr '26","Mei '26"] },
+  "Apr 2026": { f:0.972, date:"30 Apr 2026", months:["Nov '25","Des '25","Jan '26","Feb '26","Mar '26","Apr '26"], months12:["Mei '25","Jun '25","Jul '25","Agu '25","Sep '25","Okt '25","Nov '25","Des '25","Jan '26","Feb '26","Mar '26","Apr '26"] },
+  "Mar 2026": { f:0.945, date:"31 Mar 2026", months:["Okt '25","Nov '25","Des '25","Jan '26","Feb '26","Mar '26"], months12:["Apr '25","Mei '25","Jun '25","Jul '25","Agu '25","Sep '25","Okt '25","Nov '25","Des '25","Jan '26","Feb '26","Mar '26"] },
 };
 const PAT_OS    = [0.93,0.95,0.96,0.975,0.99,1.0];
 const PAT_DEB   = [0.95,0.96,0.97,0.98,0.99,1.0];
 const PAT_CKPN  = [0.87,0.90,0.92,0.95,0.98,1.0];
 const PAT_TUNGG = [0.66,0.74,0.81,0.94,0.86,1.0];
+const PAT_CKPN_12  = [0.62,0.65,0.68,0.72,0.76,0.81, 0.87,0.90,0.92,0.95,0.98,1.0];
+const PAT_TUNGG_12 = [0.38,0.43,0.49,0.54,0.58,0.62, 0.66,0.74,0.81,0.94,0.86,1.0];
 
 const fNum  = (n)=>Math.round(n).toLocaleString("id-ID");
 const fMil  = (jt)=>"Rp "+(jt/1000).toLocaleString("id-ID",{minimumFractionDigits:2,maximumFractionDigits:2})+" M";
@@ -231,13 +233,41 @@ function buildModel(list, periode) {
   const gSeg = groupBy(d=>d.segment);
   const perSegment = ["Mikro","Kecil","Menengah"].filter(s=>gSeg[s]).map(s=>({ segment:s, osJt:sum(gSeg[s],d=>d.osJt)*f, deb:gSeg[s].length }));
 
-  const alasanTinggi = ["DPD melewati batas 90 hari","Penurunan omzet > 50%","Kolektibilitas memburuk","Tunggakan angsuran berlanjut"];
-  const alasanSedang = ["DPD 1-90 hari","Saldo rekening menurun signifikan","Frekuensi transaksi menurun","Penurunan saldo rata-rata"];
-  const alerts = [...list].sort((a,b)=>b.dpd-a.dpd).slice(0,10).map((d,i)=>({
-    level:d.tier,
-    text:`Debitur ${d.nama} (CIF ${d.cif}) ${d.tier==="rendah"?"pembayaran lancar":d.tier==="tinggi"?alasanTinggi[i%alasanTinggi.length]+` — DPD ${d.dpd} hari`:alasanSedang[i%alasanSedang.length]+` — DPD ${d.dpd} hari`}`,
-    time:`${P.date.split(" ")[0]}/05/2026 ${String(9-(i%6)).padStart(2,"0")}:${String((45-i*5+60)%60).padStart(2,"0")}`,
-  }));
+  const alasanTinggi = [
+    "DPD melewati batas 90 hari",
+    "Penurunan omzet > 50%, usaha terindikasi bermasalah",
+    "Kolektibilitas memburuk, tunggakan pokok & bunga berlanjut",
+    "Tunggakan angsuran > 3 bulan berturut-turut",
+    "Usaha berhenti / tidak aktif berdasarkan kunjungan lapangan",
+    "Nilai agunan menurun signifikan di bawah outstanding",
+  ];
+  const alasanSedang = [
+    "DPD 1–90 hari, perlu monitoring & kunjungan rutin",
+    "Saldo rekening menurun signifikan dalam 3 bulan terakhir",
+    "Frekuensi transaksi debit-kredit menurun > 40%",
+    "Penurunan saldo rata-rata rekening koran",
+    "Keterlambatan pembayaran angsuran berulang",
+    "Omzet usaha terindikasi turun 20–50%",
+  ];
+  const alasanRendah = [
+    "Pembayaran angsuran rutin & tepat waktu — kondisi lancar",
+    "Saldo rekening stabil, tidak ada anomali mutasi",
+    "Mutasi rekening aktif & normal sesuai pola usaha",
+    "Aktivitas usaha berjalan baik, tidak ada indikasi masalah",
+  ];
+  const mkAlertTime = (i) => {
+    const h = String(Math.max(7, 17 - Math.floor(i/2))).padStart(2,"0");
+    const mn = String(55 - (i*7)%56).padStart(2,"0");
+    return `${P.date} ${h}:${mn}`;
+  };
+  const topTinggi = [...list].filter(d=>d.tier==="tinggi").sort((a,b)=>b.dpd-a.dpd).slice(0,8);
+  const topSedang = [...list].filter(d=>d.tier==="sedang").sort((a,b)=>b.dpd-a.dpd).slice(0,6);
+  const topRendah = [...list].filter(d=>d.tier==="rendah").sort((a,b)=>b.osJt-a.osJt).slice(0,4);
+  const alerts = [
+    ...topTinggi.map((d,i)=>({ level:"tinggi", text:`Debitur ${d.nama} (CIF ${d.cif}) — ${alasanTinggi[i%alasanTinggi.length]} · DPD ${d.dpd} hari`, time:mkAlertTime(i) })),
+    ...topSedang.map((d,i)=>({ level:"sedang", text:`Debitur ${d.nama} (CIF ${d.cif}) — ${alasanSedang[i%alasanSedang.length]} · DPD ${d.dpd} hari`, time:mkAlertTime(i+8) })),
+    ...topRendah.map((d,i)=>({ level:"rendah", text:`Debitur ${d.nama} (CIF ${d.cif}) — ${alasanRendah[i%alasanRendah.length]}`, time:mkAlertTime(i+14) })),
+  ];
 
   const jenisFor = (d,i)=> d.tier==="tinggi" ? (i%2?"Restrukturisasi":"Kunjungan & Negosiasi")
     : (i%2?"Reminder & Monitoring":"Surat Peringatan 1");
@@ -252,11 +282,15 @@ function buildModel(list, periode) {
     return { nama:d.nama, osJt:d.osJt*f, kol:d.kol, ckpn:ex, saving:sv, pct: ex?sv/ex*100:0 };
   });
 
+  const ser12 = (cur,pat)=>pat.map((p,i)=>({ bln:P.months12[i], nilai:+(cur*p).toFixed(3) }));
+
   return {
     P, totalDeb, totalOsJt, tier, kol, npl, ckpnExisting, ckpnAfter, ckpnSaving, savingPct,
     tunggakanJt,
     trendTunggakan: ser(tunggakanJt/1000, PAT_TUNGG),
     trendCKPN: ser(ckpnExisting/1000, PAT_CKPN),
+    trendTunggakan12: ser12(tunggakanJt/1000, PAT_TUNGG_12),
+    trendCKPN12: ser12(ckpnExisting/1000, PAT_CKPN_12),
     deltas:{ os:delta(PAT_OS), deb:delta(PAT_DEB), ckpn:delta(PAT_CKPN) },
     top10, ringkasanEW, perUker, perAO, perSektor, perSegment, alerts, actionPlans, ckpnDebitur,
   };
@@ -390,13 +424,13 @@ const Select = ({ value, onChange, options, style }) => (
     {options.map(o=> typeof o==="string" ? <option key={o} value={o}>{o}</option> : <option key={o.value} value={o.value}>{o.label}</option>)}
   </select>
 );
-const Tabel = ({ headers, rows, colW }) => (
-  <div style={{ overflowX:"auto" }}>
+const Tabel = ({ headers, rows, colW, stickyHeader }) => (
+  <div style={stickyHeader ? {} : { overflowX:"auto" }}>
     <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5, tableLayout:"fixed" }}>
       <thead>
-        <tr style={{ background:C.grayLt }}>
+        <tr>
           {headers.map((h,i)=>(
-            <th key={i} style={{ padding:"9px 12px", color:C.gray, fontWeight:600, fontSize:10.5, textTransform:"uppercase", textAlign:"left", width:colW?.[i], whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}` }}>{h}</th>
+            <th key={i} style={{ padding:"9px 12px", color:C.gray, fontWeight:600, fontSize:10.5, textTransform:"uppercase", textAlign:"left", width:colW?.[i], whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}`, background:C.grayLt, ...(stickyHeader?{ position:"sticky", top:0, zIndex:1 }:{}) }}>{h}</th>
           ))}
         </tr>
       </thead>
@@ -419,6 +453,9 @@ function Dashboard({ m, go }) {
   const w = useWindowWidth();
   const kpiCols   = w >= 1280 ? "repeat(6,1fr)" : w >= 900 ? "repeat(3,1fr)" : "repeat(2,1fr)";
   const chartsRow = w >= 1100 ? "1fr 1fr 1fr" : w >= 720 ? "1fr 1fr" : "1fr";
+  const [blnTungg, setBlnTungg] = useState("6 Bulan");
+  const [blnCKPN,  setBlnCKPN]  = useState("6 Bulan");
+  const getTrend = (d6, d12, bln) => bln==="3 Bulan" ? d6.slice(-3) : bln==="12 Bulan" ? d12 : d6;
   const row3      = w >= 1150 ? "1.5fr 1fr 1fr" : "1fr";
   const row4      = w >= 1000 ? "1.3fr 1fr" : "1fr";
   const up = (x)=>(x>=0?"▲ ":"▼ ")+fPct(Math.abs(x),2)+" vs bln lalu";
@@ -455,14 +492,14 @@ function Dashboard({ m, go }) {
           </div>
         </div>
         <div style={card}>
-          <CardTitle right={<Select value="6 Bulan" onChange={()=>{}} options={["3 Bulan","6 Bulan","12 Bulan"]} />}>Trend Tunggakan (DPD &gt; 0)</CardTitle>
+          <CardTitle right={<Select value={blnTungg} onChange={e=>setBlnTungg(e.target.value)} options={["3 Bulan","6 Bulan","12 Bulan"]} />}>Trend Tunggakan (DPD &gt; 0)</CardTitle>
           <div style={{ fontSize:11, color:C.gray, marginTop:-6, marginBottom:4 }}>(Dalam Miliar Rupiah)</div>
-          <TrendChart data={m.trendTunggakan} color={C.kpiRed} />
+          <TrendChart data={getTrend(m.trendTunggakan, m.trendTunggakan12, blnTungg)} color={C.kpiRed} />
         </div>
         <div style={card}>
-          <CardTitle right={<Select value="6 Bulan" onChange={()=>{}} options={["3 Bulan","6 Bulan","12 Bulan"]} />}>Trend CKPN</CardTitle>
+          <CardTitle right={<Select value={blnCKPN} onChange={e=>setBlnCKPN(e.target.value)} options={["3 Bulan","6 Bulan","12 Bulan"]} />}>Trend CKPN</CardTitle>
           <div style={{ fontSize:11, color:C.gray, marginTop:-6, marginBottom:4 }}>(Dalam Miliar Rupiah)</div>
-          <TrendChart data={m.trendCKPN} color={C.kpiBlue} />
+          <TrendChart data={getTrend(m.trendCKPN, m.trendCKPN12, blnCKPN)} color={C.kpiBlue} />
         </div>
       </div>
 
@@ -646,16 +683,23 @@ function EarlyWarning({ m }) {
   const [filter, setFilter] = useState("semua");
   const alerts = filter==="semua" ? m.alerts : m.alerts.filter(a=>a.level===filter);
   const ukerAlert = m.perUker.map(u=>({ nama:u.nama, tinggi:u.tinggi })).filter(u=>u.tinggi>0).sort((a,b)=>b.tinggi-a.tinggi);
+  const countByLevel = { tinggi:m.alerts.filter(a=>a.level==="tinggi").length, sedang:m.alerts.filter(a=>a.level==="sedang").length, rendah:m.alerts.filter(a=>a.level==="rendah").length };
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
       <div style={{ display:"grid", gridTemplateColumns: w>=600?"repeat(3,1fr)":"1fr", gap:12 }}>
         {m.ringkasanEW.map((r)=>{
           const lv = r.label.includes("Tinggi")?"tinggi":r.label.includes("Sedang")?"sedang":"rendah";
+          const alertCnt = countByLevel[lv];
           return (
             <div key={lv} onClick={()=>setFilter(f=>f===lv?"semua":lv)} style={{ ...card, border:`2px solid ${filter===lv?risikoColor[lv]:C.border}`, background:filter===lv?risikoBg[lv]:C.white, cursor:"pointer", textAlign:"center" }}>
               <div style={{ fontSize:30, fontWeight:800, color:risikoColor[lv] }}>{fNum(r.value)}</div>
               <div style={{ fontSize:13, color:risikoColor[lv], fontWeight:500 }}>{r.label} · {fPct(r.pct)}</div>
+              {alertCnt > 0 && (
+                <div style={{ marginTop:6, fontSize:11, color:risikoColor[lv], background:risikoBg[lv], borderRadius:12, display:"inline-block", padding:"2px 10px", border:`1px solid ${risikoColor[lv]}`, opacity:.85 }}>
+                  {alertCnt} alert aktif
+                </div>
+              )}
             </div>
           );
         })}
@@ -671,15 +715,31 @@ function EarlyWarning({ m }) {
         </div>
       </div>
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
-        <div style={{ padding:"12px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <span style={{ fontSize:13, color:C.gray }}>{filter==="semua"?"Semua alert":risikoLabel[filter]} · {alerts.length} item</span>
-          {filter!=="semua" && <button onClick={()=>setFilter("semua")} style={{ fontSize:12, color:C.navy, background:"none", border:"none", cursor:"pointer" }}>Tampilkan semua</button>}
+        <div style={{ padding:"12px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
+          <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+            {["semua","tinggi","sedang","rendah"].map(lv=>{
+              const cnt = lv==="semua" ? m.alerts.length : countByLevel[lv];
+              const active = filter===lv;
+              const col = lv==="semua" ? C.navy : risikoColor[lv];
+              return (
+                <button key={lv} onClick={()=>setFilter(lv)} style={{ padding:"4px 12px", border:`1px solid ${active?col:C.border}`, borderRadius:20, background:active?(lv==="semua"?C.navyLt:risikoBg[lv]):C.white, color:active?col:C.gray, fontSize:12, fontWeight:active?700:500, cursor:"pointer" }}>
+                  {lv==="semua"?"Semua":risikoLabel[lv]} <span style={{ fontWeight:700 }}>({cnt})</span>
+                </button>
+              );
+            })}
+          </div>
+          <span style={{ fontSize:12, color:C.gray }}>{alerts.length} item ditampilkan</span>
         </div>
+        {alerts.length === 0 && (
+          <div style={{ padding:"24px", textAlign:"center", color:C.gray, fontSize:13 }}>Tidak ada alert untuk filter ini</div>
+        )}
         {alerts.map((a,i)=>(
           <div key={i} style={{ padding:"11px 16px", borderBottom:`1px solid #F1F3F6`, display:"flex", gap:12, alignItems:"flex-start" }}>
             <span style={{ color:risikoColor[a.level], marginTop:1, flexShrink:0 }}><Ic n={a.level==="rendah"?"check":"warning"} size={18} /></span>
-            <div style={{ flex:1, fontSize:12.5, color:C.textMd, lineHeight:1.4 }}>{a.text}</div>
-            <div style={{ fontSize:11, color:C.gray, flexShrink:0 }}>{a.time}</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:12.5, color:C.textMd, lineHeight:1.4 }}>{a.text}</div>
+            </div>
+            <div style={{ fontSize:11, color:C.gray, flexShrink:0, whiteSpace:"nowrap" }}>{a.time}</div>
             <Badge level={a.level} />
           </div>
         ))}
@@ -894,8 +954,8 @@ function KinerjaAO({ m }) {
       </div>
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
         <div style={{ padding:"14px 16px 0" }}><CardTitle>Rekap Kinerja per AO / Mantri</CardTitle></div>
-        <div style={{ maxHeight:420, overflowY:"auto" }}>
-          <Tabel
+        <div style={{ maxHeight:420, overflowY:"auto", overflowX:"auto" }}>
+          <Tabel stickyHeader
             headers={["AO / Mantri","Unit Kerja","Outstanding","Jml Debitur","Risiko Tinggi","Action Plan","Berhasil"]}
             colW={[130,140,120,90,100,90,90]}
             rows={m.perAO.map(k=>[
@@ -968,14 +1028,21 @@ function Laporan({ m, perms }) {
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
         <div style={{ padding:"14px 16px 0" }}><CardTitle>Riwayat Import Data</CardTitle></div>
         <Tabel
-          headers={["Tanggal","Jenis","Periode","Jumlah Record","Status","Oleh"]}
-          colW={[120,140,100,130,100,120]}
+          headers={["Tanggal Import","Jenis Data","Periode","Jumlah Record","Ukuran File","Status","Diproses Oleh"]}
+          colW={[130,150,100,130,100,110,130]}
           rows={[
-            ["31/05/2026","LW321","Mei 2026",fNum(DEBITUR.length)+" record",<span style={{ color:C.green }}>✓ Sukses</span>,"Demo User"],
-            ["31/05/2026","CKPN per Uker","Mei 2026","13 unit kerja",<span style={{ color:C.green }}>✓ Sukses</span>,"Demo User"],
-            ["30/04/2026","LW321","Apr 2026",fNum(DEBITUR.length-7)+" record",<span style={{ color:C.green }}>✓ Sukses</span>,"Demo User"],
+            ["31/05/2026 07:27","LW321 – Kolektibilitas","Mei 2026",fNum(DEBITUR.length)+" record","2,4 MB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Dewi Anggraini"],
+            ["31/05/2026 07:29","CKPN per Unit Kerja","Mei 2026","13 unit kerja","84 KB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Dewi Anggraini"],
+            ["30/04/2026 08:11","LW321 – Kolektibilitas","Apr 2026",fNum(DEBITUR.length-7)+" record","2,3 MB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Dewi Anggraini"],
+            ["30/04/2026 08:14","CKPN per Unit Kerja","Apr 2026","13 unit kerja","81 KB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Dewi Anggraini"],
+            ["31/03/2026 09:02","LW321 – Kolektibilitas","Mar 2026",fNum(DEBITUR.length-12)+" record","2,2 MB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Hery Susanto"],
+            ["31/03/2026 09:04","CKPN per Unit Kerja","Mar 2026","13 unit kerja","79 KB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Hery Susanto"],
+            ["29/02/2026 10:45","LW321 – Kolektibilitas","Feb 2026",fNum(DEBITUR.length-19)+" record","2,1 MB",<span style={{ color:C.amber, fontWeight:600 }}>⚠ Parsial</span>,"Dewi Anggraini"],
           ]}
         />
+        <div style={{ padding:"10px 16px", borderTop:`1px solid ${C.border}`, fontSize:11.5, color:C.gray }}>
+          ⚠ Parsial = sebagian record gagal diproses karena format kolom tidak sesuai. Data valid tetap tersimpan.
+        </div>
       </div>
     </div>
   );
@@ -1010,16 +1077,51 @@ function Pengaturan({ perms }) {
         </div>
         <div style={{ ...card, padding:0, overflow:"hidden" }}>
           <div style={{ padding:"14px 16px 0" }}><CardTitle>Daftar Unit Kerja — BO Polewali</CardTitle></div>
-          <div style={{ maxHeight:300, overflowY:"auto" }}>
-            <Tabel headers={["No","Kode Uker","Nama Unit Kerja","Tipe"]} colW={[50,110,"auto",90]}
+          <div style={{ maxHeight:300, overflowY:"auto", overflowX:"auto" }}>
+            <Tabel stickyHeader headers={["No","Kode Uker","Nama Unit Kerja","Tipe"]} colW={[50,110,"auto",90]}
               rows={UKER.map((u,i)=>[i+1, <b style={{ color:C.navy }}>{u.kode}</b>, u.nama, u.tipe])} />
           </div>
         </div>
       </div>
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"14px 16px 8px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ fontSize:12.5, fontWeight:700, color:"#1F2937", letterSpacing:.3, textTransform:"uppercase" }}>Contoh Format Data LW321</div>
+          <span style={{ fontSize:11, color:C.gray, fontStyle:"italic" }}>Kolom utama yang dibaca sistem</span>
+        </div>
+        <div style={{ overflowX:"auto" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11.5, tableLayout:"auto" }}>
+            <thead>
+              <tr style={{ background:C.grayLt }}>
+                {["CIFNO","NAMA_DEBITUR","KODE_UKER","UKER","KOL_ADK","PLAFON","BALANCE_IDR","TUNGGAKAN_POKOK","TUNGGAKAN_BUNGA","TGL_MENUNGGAK","PN_PENGELOLA_1","SEGMEN_LV1"].map((h,i)=>(
+                  <th key={i} style={{ padding:"7px 10px", color:C.gray, fontWeight:600, fontSize:10, textTransform:"uppercase", textAlign:"left", whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}` }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                ["SP55434","SUBARKAM","259","KC Polewali","1","150000000","36498414","0","0","-","00157966 – Dini Dewi Buawati","RITEL"],
+                ["PCH0960","PEBRIANTO PATULAK","259","KC Polewali","1","70000000","31914971","0","0","-","00157966 – Dini Dewi Buawati","RITEL"],
+                ["SX63095","SULTAN","259","KC Polewali","2","13000000","4000000","4000000","947590","11/04/2008","00056207 – Wahyuni","RITEL"],
+                ["L184879","LSM PEMA SIDODADI","259","KC Polewali","3","6725231315","2305268181","2305268181","0","13/01/2000","00030487 – Subadri","RITEL"],
+                ["MD72183","MALAHAYATI SAPRIWALI","259","KC Polewali","4","95000000","25985177","9619223","2143777","16/07/2008","00125634 – Nurfaida","RITEL"],
+              ].map((row,ri)=>(
+                <tr key={ri} style={{ background: ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6` }}>
+                  {row.map((cell,ci)=>(
+                    <td key={ci} style={{ padding:"6px 10px", color: ci===4?(cell==="1"?C.green:cell==="2"?C.amber:cell==="3"||cell==="4"?C.red:C.textMd):C.textMd, fontWeight:ci===4?700:400, whiteSpace:"nowrap" }}>{cell}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ padding:"10px 16px", borderTop:`1px solid ${C.border}`, fontSize:11, color:C.gray }}>
+          Total 45 kolom pada file LW321 · Sistem membaca kolom wajib: CIFNO, NAMA_DEBITUR, KODE_UKER, KOL_ADK, BALANCE_IDR, TUNGGAKAN_POKOK, PN_PENGELOLA_1
+        </div>
+      </div>
       <div style={{ display:"grid", gridTemplateColumns:cols, gap:12 }}>
         {[
-          { id:"lw321", title:"Import Data LW321 (Core Banking)", desc:"Format Excel (.xlsx) / CSV. Kolom: CIF, Nama, Outstanding, Angsuran, DPD, Kolektibilitas." },
-          { id:"ckpn", title:"Import CKPN per Unit Kerja", desc:"Format Excel (.xlsx) / CSV. Kolom: Kode Uker, Periode, CKPN Existing, CKPN Potensial." },
+          { id:"lw321", title:"Import Data LW321 (Core Banking)", desc:"Format Excel (.xlsx) / CSV · 45 kolom. Kolom wajib: CIFNO, NAMA_DEBITUR, KODE_UKER, KOL_ADK, BALANCE_IDR, TUNGGAKAN_POKOK, PN_PENGELOLA_1." },
+          { id:"ckpn", title:"Import CKPN per Unit Kerja", desc:"Format Excel (.xlsx) / CSV. Kolom: KODE_UKER, PERIODE, CKPN_EXISTING, CKPN_POTENSIAL, COVERAGE_RATIO." },
         ].map(b=>(
           <div key={b.id} style={{ ...card, padding:20 }}>
             <div style={{ fontSize:14, fontWeight:600, color:C.navy, marginBottom:4 }}>{b.title}</div>
@@ -1053,14 +1155,8 @@ const MENU = [
   { id:"pengaturan",  label:"Pengaturan",       icon:"gear",      chevron:true, title:"PENGATURAN", sub:"Import data, unit kerja & parameter sistem" },
 ];
 
-function Sidebar({ page, setPage, filters, setFilters, menus, locked }) {
+function Sidebar({ page, setPage, menus, periode }) {
   const [hover, setHover] = useState(null);
-  const fieldLabel = { fontSize:11, color:"#9DB6D6", marginBottom:4 };
-  const fieldBox = { width:"100%", padding:"7px 9px", borderRadius:6, border:"1px solid rgba(255,255,255,.18)", background:"rgba(255,255,255,.06)", color:"#fff", fontSize:12, boxSizing:"border-box" };
-  const fieldLock = locked ? { ...fieldBox, opacity:.55, cursor:"not-allowed" } : fieldBox;
-  const aoOpsi = filters.uker==="semua" ? [{ value:"semua", label:"Semua AO" }]
-    : [{ value:"semua", label:"Semua AO" }, ...AO.filter(a=>a.uker===filters.uker).map(a=>({ value:a.id, label:a.nama }))];
-  const set = (k,v)=>setFilters(f=>({ ...f, [k]:v, ...(k==="uker"?{ ao:"semua" }:{}) }));
 
   return (
     <aside style={{ width:236, background:C.sidebar, color:"#fff", display:"flex", flexDirection:"column", flexShrink:0, height:"100vh", overflowY:"auto" }}>
@@ -1086,29 +1182,8 @@ function Sidebar({ page, setPage, filters, setFilters, menus, locked }) {
           );
         })}
       </nav>
-      <div style={{ marginTop:8, padding:"12px 14px 8px", borderTop:"1px solid rgba(255,255,255,.08)" }}>
-        <div style={{ fontSize:12, fontWeight:700, marginBottom:10 }}>Filter Cepat</div>
-        <div style={{ marginBottom:10 }}><div style={fieldLabel}>Unit Kerja</div>
-          <select style={fieldLock} value={filters.uker} onChange={e=>set("uker",e.target.value)} disabled={locked}>
-            <option value="semua">Semua Uker (BO Polewali)</option>
-            {UKER.map(u=><option key={u.kode} value={u.kode}>{u.kode} · {u.nama}</option>)}
-          </select></div>
-        <div style={{ marginBottom:10 }}><div style={fieldLabel}>Account Officer</div>
-          <select style={fieldLock} value={filters.ao} onChange={e=>set("ao",e.target.value)} disabled={locked||filters.uker==="semua"}>
-            {aoOpsi.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-          </select></div>
-        <div style={{ marginBottom:10 }}><div style={fieldLabel}>Segment</div>
-          <select style={fieldBox} value={filters.segment} onChange={e=>set("segment",e.target.value)}>
-            <option value="semua">Semua Segment</option>
-            {["Mikro","Kecil","Menengah"].map(s=><option key={s} value={s}>{s}</option>)}
-          </select></div>
-        <div style={{ marginBottom:2 }}><div style={fieldLabel}>Tgl Data</div>
-          <div style={{ ...fieldBox, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-            <span>{(PERIODE[filters.periode]||PERIODE["Mei 2026"]).date}</span><Ic n="calendar" size={15} style={{ opacity:.7 }} />
-          </div></div>
-      </div>
       <div style={{ marginTop:"auto", padding:"12px 16px", borderTop:"1px solid rgba(255,255,255,.08)", fontSize:11, color:C.sidebarMuted }}>
-        Demo · Data Mock · {filters.periode}
+        Demo · Data Mock · {periode}
       </div>
     </aside>
   );
@@ -1195,7 +1270,7 @@ export default function App() {
 
   return (
     <div style={{ display:"flex", height:"100vh", fontFamily:"system-ui,'Segoe UI',Roboto,sans-serif", background:C.bg, color:C.text }}>
-      <Sidebar page={safePage} setPage={setPage} filters={filters} setFilters={setFilters} menus={menus} locked={perms.scope==="ao"} />
+      <Sidebar page={safePage} setPage={setPage} menus={menus} periode={filters.periode} />
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
         <header style={{ background:C.white, borderBottom:`1px solid ${C.border}`, padding:"12px 22px", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0, gap:12 }}>
           <div style={{ minWidth:0 }}>
