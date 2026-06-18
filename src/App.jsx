@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { parseLW321 } from "./lw321Parser.js";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, PieChart, Pie, Cell, Sector, LabelList, BarChart, Bar, Legend
@@ -91,7 +92,7 @@ const rng = mulberry32(20260531);
 const AO = [];
 UKER.forEach(u => {
   const k = u.tipe==="KANCA" ? 5 : u.tipe==="KCP" ? 3 : 2;
-  const role = u.tipe==="UNIT" ? "Mantri" : "AO";
+  const role = "Mantri";
   for (let i=0;i<k;i++) AO.push({ id:`${u.kode}-${i}`, nama:`${role} ${pick(NAMA_AO,rng)}`, uker:u.kode });
 });
 
@@ -192,7 +193,7 @@ function buildModel(list, periode) {
   const ser = (cur,pat)=>pat.map((p,i)=>({ bln:P.months[i], nilai:+(cur*p).toFixed(3) }));
   const delta = (pat)=> (1-pat[4]/pat[5])*100;
 
-  const top10 = [...list].filter(d=>d.kol!=="1").sort((a,b)=>b.osJt-a.osJt).slice(0,10);
+  const top10 = [...list].filter(d=>d.tier==="tinggi").sort((a,b)=>b.dpd-a.dpd).slice(0,10);
 
   const ringkasanEW = [
     { label:"Risiko Tinggi", value:tier.tinggi, color:C.red,   pct: totalDeb?tier.tinggi/totalDeb*100:0 },
@@ -455,6 +456,8 @@ function Dashboard({ m, go }) {
   const chartsRow = w >= 1100 ? "1fr 1fr 1fr" : w >= 720 ? "1fr 1fr" : "1fr";
   const [blnTungg, setBlnTungg] = useState("6 Bulan");
   const [blnCKPN,  setBlnCKPN]  = useState("6 Bulan");
+  const [sortTop10, setSortTop10] = useState("dpd");
+  const top10Sorted = [...m.top10].sort((a,b)=> sortTop10==="os" ? b.osJt-a.osJt : b.dpd-a.dpd);
   const getTrend = (d6, d12, bln) => bln==="3 Bulan" ? d6.slice(-3) : bln==="12 Bulan" ? d12 : d6;
   const row3      = w >= 1150 ? "1.5fr 1fr 1fr" : "1fr";
   const row4      = w >= 1000 ? "1.3fr 1fr" : "1fr";
@@ -505,7 +508,15 @@ function Dashboard({ m, go }) {
 
       <div style={{ display:"grid", gridTemplateColumns:row3, gap:12 }}>
         <div style={{ ...card, padding:0, overflow:"hidden" }}>
-          <div style={{ padding:"14px 16px 0" }}><CardTitle>Top 10 Debitur Risiko Tinggi</CardTitle></div>
+          <div style={{ padding:"14px 16px 0" }}>
+            <CardTitle right={
+              <div style={{ display:"flex", gap:4 }}>
+                {[{ k:"dpd", label:"DPD Tertinggi" },{ k:"os", label:"Outstanding Tertinggi" }].map(opt=>(
+                  <button key={opt.k} onClick={()=>setSortTop10(opt.k)} style={{ padding:"3px 10px", border:`1px solid ${sortTop10===opt.k?C.navy:C.border}`, borderRadius:20, background:sortTop10===opt.k?C.navyLt:C.white, color:sortTop10===opt.k?C.navy:C.gray, fontSize:11, fontWeight:sortTop10===opt.k?700:500, cursor:"pointer" }}>{opt.label}</button>
+                ))}
+              </div>
+            }>Top 10 Debitur Risiko Tinggi</CardTitle>
+          </div>
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
               <thead>
@@ -516,7 +527,7 @@ function Dashboard({ m, go }) {
                 </tr>
               </thead>
               <tbody>
-                {m.top10.map((d,i)=>(
+                {top10Sorted.map((d,i)=>(
                   <tr key={d.cif} style={{ borderBottom:`1px solid #F1F3F6` }}>
                     <td style={{ padding:"8px 12px", color:C.gray }}>{i+1}</td>
                     <td style={{ padding:"8px 12px", color:C.textMd }}>{d.cif}</td>
@@ -531,7 +542,7 @@ function Dashboard({ m, go }) {
               <tfoot>
                 <tr style={{ background:C.grayLt }}>
                   <td colSpan={3} style={{ padding:"9px 12px", fontWeight:700, color:C.text }}>Total</td>
-                  <td style={{ padding:"9px 12px", fontWeight:700, color:C.text }}>{fFull(m.top10.reduce((s,d)=>s+d.osJt,0))}</td>
+                  <td style={{ padding:"9px 12px", fontWeight:700, color:C.text }}>{fFull(top10Sorted.reduce((s,d)=>s+d.osJt,0))}</td>
                   <td colSpan={3}></td>
                 </tr>
               </tfoot>
@@ -752,18 +763,26 @@ function DaftarDebitur({ list }) {
   const [cari, setCari] = useState("");
   const [kol, setKol] = useState("Semua Kolektibilitas");
   const [risiko, setRisiko] = useState("Semua Risiko");
+  const [selectedUker, setSelectedUker] = useState([]);
+  const [sortBy, setSortBy] = useState("default");
   const [page, setPage] = useState(1);
   const perPage = 12;
+
+  const ukerList = UKER.filter(u=>list.some(d=>d.uker===u.kode));
 
   const filtered = list.filter(d=>{
     const okCari = d.nama.toLowerCase().includes(cari.toLowerCase()) || d.cif.includes(cari);
     const okKol = kol==="Semua Kolektibilitas" || ("Kol "+d.kol)===kol;
     const okRsk = risiko==="Semua Risiko" || risikoLabel[d.tier]===risiko;
-    return okCari && okKol && okRsk;
+    const okUker = selectedUker.length===0 || selectedUker.includes(d.uker);
+    return okCari && okKol && okRsk && okUker;
   });
-  const totalPage = Math.max(1, Math.ceil(filtered.length/perPage));
+  const sorted = sortBy==="dpd" ? [...filtered].sort((a,b)=>b.dpd-a.dpd)
+               : sortBy==="os"  ? [...filtered].sort((a,b)=>b.osJt-a.osJt)
+               : filtered;
+  const totalPage = Math.max(1, Math.ceil(sorted.length/perPage));
   const pg = Math.min(page, totalPage);
-  const shown = filtered.slice((pg-1)*perPage, pg*perPage);
+  const shown = sorted.slice((pg-1)*perPage, pg*perPage);
   const reset = (fn)=>(e)=>{ fn(e.target.value); setPage(1); };
 
   const inputS = { padding:"7px 10px 7px 32px", border:`1px solid ${C.border}`, borderRadius:7, fontSize:13, background:C.white, color:C.text, width:240 };
@@ -775,13 +794,15 @@ function DaftarDebitur({ list }) {
           <span style={{ position:"absolute", left:9, top:8, color:C.gray }}><Ic n="search" size={16} /></span>
           <input placeholder="Cari nama atau CIF..." value={cari} onChange={reset(setCari)} style={inputS} />
         </div>
+        <MultiSelectUnit options={ukerList} selected={selectedUker} onChange={(v)=>{ setSelectedUker(v); setPage(1); }} />
         <Select value={kol} onChange={reset(setKol)} options={["Semua Kolektibilitas","Kol 1","Kol 2A","Kol 2B","Kol 3","Kol 4","Kol 5"]} />
         <Select value={risiko} onChange={reset(setRisiko)} options={["Semua Risiko","Risiko Tinggi","Risiko Sedang","Risiko Rendah"]} />
-        <span style={{ marginLeft:"auto", fontSize:13, color:C.gray }}>{fNum(filtered.length)} debitur</span>
+        <Select value={sortBy} onChange={(e)=>{ setSortBy(e.target.value); setPage(1); }} options={[{ value:"default", label:"Urutan Default" },{ value:"dpd", label:"DPD Tertinggi" },{ value:"os", label:"Outstanding Tertinggi" }]} />
+        <span style={{ marginLeft:"auto", fontSize:13, color:C.gray }}>{fNum(sorted.length)} debitur</span>
       </SubFilter>
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
         <Tabel
-          headers={["CIF","Nama Debitur","Unit Kerja","AO Pengelola","Outstanding","Kol","DPD","Skor","Status Risiko"]}
+          headers={["CIF","Nama Debitur","Unit Kerja","Mantri Pengelola","Outstanding","Kol","DPD","Skor","Status Risiko"]}
           colW={[88,150,120,120,110,46,50,56,120]}
           rows={shown.map(d=>[
             d.cif, d.nama, d.ukerNama, d.ao,
@@ -792,10 +813,10 @@ function DaftarDebitur({ list }) {
             <Badge level={d.tier} />,
           ])}
         />
-        {filtered.length===0 && <div style={{ padding:24, textAlign:"center", color:C.gray, fontSize:14 }}>Tidak ada data</div>}
-        {filtered.length>0 && (
+        {sorted.length===0 && <div style={{ padding:24, textAlign:"center", color:C.gray, fontSize:14 }}>Tidak ada data</div>}
+        {sorted.length>0 && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 16px", borderTop:`1px solid ${C.border}` }}>
-            <span style={{ fontSize:12, color:C.gray }}>Menampilkan {(pg-1)*perPage+1}–{Math.min(pg*perPage,filtered.length)} dari {fNum(filtered.length)}</span>
+            <span style={{ fontSize:12, color:C.gray }}>Menampilkan {(pg-1)*perPage+1}–{Math.min(pg*perPage,sorted.length)} dari {fNum(sorted.length)}</span>
             <div style={{ display:"flex", gap:6, alignItems:"center" }}>
               <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={pg<=1} style={pgBtn(pg<=1)}>‹ Prev</button>
               <span style={{ fontSize:12.5, color:C.textMd }}>Hal {pg} / {totalPage}</span>
@@ -809,6 +830,49 @@ function DaftarDebitur({ list }) {
 }
 const pgBtn = (dis)=>({ padding:"5px 12px", border:`1px solid ${C.border}`, borderRadius:6, background:C.white, color:dis?C.gray:C.navy, fontSize:12.5, cursor:dis?"default":"pointer", opacity:dis?.5:1 });
 
+function MultiSelectUnit({ options, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  useEffect(()=>{
+    const handler = (e)=>{ if (!document.getElementById("msu-drop")?.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return ()=>document.removeEventListener("mousedown", handler);
+  }, []);
+  const allSelected = selected.length === 0;
+  const label = allSelected ? "Semua Unit" : selected.length === 1 ? options.find(o=>o.kode===selected[0])?.nama : `${selected.length} Unit dipilih`;
+  const toggle = (kode) => {
+    onChange(selected.includes(kode) ? selected.filter(k=>k!==kode) : [...selected, kode]);
+  };
+  return (
+    <div id="msu-drop" style={{ position:"relative" }}>
+      <button onClick={()=>setOpen(o=>!o)} style={{ padding:"6px 10px", border:`1px solid ${selected.length>0?C.navy:C.border}`, borderRadius:7, fontSize:12.5, background:selected.length>0?C.navyLt:C.white, color:selected.length>0?C.navy:C.textMd, cursor:"pointer", display:"flex", alignItems:"center", gap:6, minWidth:148, whiteSpace:"nowrap" }}>
+        <Ic n="building" size={14} />
+        <span style={{ flex:1, textAlign:"left" }}>{label}</span>
+        <Ic n="chevronD" size={13} />
+      </button>
+      {open && (
+        <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, zIndex:200, background:C.white, border:`1px solid ${C.border}`, borderRadius:9, boxShadow:"0 6px 24px rgba(0,0,0,.13)", minWidth:220, maxHeight:320, display:"flex", flexDirection:"column" }}>
+          <div style={{ padding:"8px 10px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:6 }}>
+            <button onClick={()=>onChange([])} style={{ flex:1, padding:"4px 0", fontSize:11.5, border:`1px solid ${C.border}`, borderRadius:6, background:C.white, color:C.navy, cursor:"pointer", fontWeight:600 }}>Semua</button>
+            <button onClick={()=>onChange(options.map(o=>o.kode))} style={{ flex:1, padding:"4px 0", fontSize:11.5, border:`1px solid ${C.border}`, borderRadius:6, background:C.white, color:C.gray, cursor:"pointer" }}>Pilih Semua</button>
+          </div>
+          <div style={{ overflowY:"auto", padding:"6px 0" }}>
+            {options.map(o=>{
+              const checked = selected.includes(o.kode);
+              return (
+                <label key={o.kode} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 12px", cursor:"pointer", background:checked?C.navyLt:"transparent", fontSize:12.5, color:checked?C.navy:C.textMd }}>
+                  <input type="checkbox" checked={checked} onChange={()=>toggle(o.kode)} style={{ accentColor:C.navy, width:14, height:14, cursor:"pointer", flexShrink:0 }} />
+                  <span style={{ flex:1 }}>{o.nama}</span>
+                  <span style={{ fontSize:11, color:C.gray, background:C.grayLt, borderRadius:10, padding:"1px 7px" }}>{o.tipe}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ActionPlan({ m, perms }) {
   const w = useWindowWidth();
   const [extra, setExtra] = useState([]);
@@ -818,11 +882,32 @@ function ActionPlan({ m, perms }) {
 
   const handleTambah = () => {
     if (!form.nama) return;
-    setExtra([{ tgl:new Date().toLocaleDateString("id-ID"), cif:"-", nama:form.nama, ao:"DEMO AO 1", kol:"2B",
+    setExtra([{ tgl:new Date().toLocaleDateString("id-ID"), cif:"-", nama:form.nama, ao:"Demo Mantri 1", kol:"2B",
       jenis:form.jenis, target:form.target||"-", status:"in_progress", hasil:form.catatan||"-" }, ...extra]);
     setShowForm(false); setForm({ nama:"", jenis:"Kunjungan", target:"", catatan:"" });
   };
   const inputS = { width:"100%", padding:"7px 10px", border:`1px solid ${C.border}`, borderRadius:6, fontSize:13, background:C.white, color:C.text, boxSizing:"border-box" };
+
+  const [cariAP, setCariAP] = useState("");
+  const [filterStatus, setFilterStatus] = useState("Semua Status");
+  const [filterJenis, setFilterJenis] = useState("Semua Jenis");
+  const [filterKolAP, setFilterKolAP] = useState("Semua Kol");
+  const [pageAP, setPageAP] = useState(1);
+  const perPageAP = 10;
+
+  const jenisOptions = ["Semua Jenis", ...Array.from(new Set(plans.map(p=>p.jenis)))];
+  const kolOptions   = ["Semua Kol",   ...Array.from(new Set(plans.map(p=>p.kol))).sort()];
+
+  const filteredPlans = plans.filter(p=>{
+    const okCari   = p.nama.toLowerCase().includes(cariAP.toLowerCase()) || p.cif?.includes(cariAP);
+    const okStatus = filterStatus==="Semua Status" || (filterStatus==="In Progress"?p.status==="in_progress":p.status==="selesai");
+    const okJenis  = filterJenis==="Semua Jenis"   || p.jenis===filterJenis;
+    const okKol    = filterKolAP==="Semua Kol"     || p.kol===filterKolAP.replace("Kol ","");
+    return okCari && okStatus && okJenis && okKol;
+  });
+  const totalPageAP = Math.max(1, Math.ceil(filteredPlans.length/perPageAP));
+  const pgAP = Math.min(pageAP, totalPageAP);
+  const shownPlans = filteredPlans.slice((pgAP-1)*perPageAP, pgAP*perPageAP);
 
   const byJenis = Object.values(plans.reduce((a,p)=>{ a[p.jenis]=a[p.jenis]||{ jenis:p.jenis, n:0 }; a[p.jenis].n++; return a; },{}));
   const selesai = plans.filter(p=>p.status==="selesai").length;
@@ -874,14 +959,35 @@ function ActionPlan({ m, perms }) {
         </div>
       )}
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"12px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+          <div style={{ position:"relative" }}>
+            <span style={{ position:"absolute", left:9, top:8, color:C.gray }}><Ic n="search" size={15} /></span>
+            <input placeholder="Cari nama debitur..." value={cariAP} onChange={e=>{ setCariAP(e.target.value); setPageAP(1); }} style={{ padding:"6px 10px 6px 30px", border:`1px solid ${C.border}`, borderRadius:7, fontSize:12.5, background:C.white, color:C.text, width:200 }} />
+          </div>
+          <Select value={filterStatus} onChange={e=>{ setFilterStatus(e.target.value); setPageAP(1); }} options={["Semua Status","In Progress","Selesai"]} />
+          <Select value={filterJenis}  onChange={e=>{ setFilterJenis(e.target.value);  setPageAP(1); }} options={jenisOptions} />
+          <Select value={filterKolAP}  onChange={e=>{ setFilterKolAP(e.target.value);  setPageAP(1); }} options={kolOptions.map(k=>k==="Semua Kol"?k:"Kol "+k)} style={{}} />
+          <span style={{ marginLeft:"auto", fontSize:12, color:C.gray }}>{filteredPlans.length} action plan</span>
+        </div>
         <Tabel
           headers={["Tanggal","Nama Debitur","PIC","Kol","Jenis Tindakan","Target","Hasil","Status"]}
           colW={[90,150,95,46,150,95,160,110]}
-          rows={plans.map(p=>[
+          rows={shownPlans.map(p=>[
             p.tgl, p.nama, p.ao, p.kol, p.jenis, p.target, p.hasil,
             <span style={{ display:"inline-block", padding:"2px 10px", borderRadius:20, background:p.status==="selesai"?C.greenLt:C.amberLt, color:p.status==="selesai"?C.green:C.amber, fontSize:11.5, fontWeight:600 }}>{statusLabel[p.status]}</span>,
           ])}
         />
+        {filteredPlans.length===0 && <div style={{ padding:24, textAlign:"center", color:C.gray, fontSize:14 }}>Tidak ada data</div>}
+        {filteredPlans.length>0 && (
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 16px", borderTop:`1px solid ${C.border}` }}>
+            <span style={{ fontSize:12, color:C.gray }}>Menampilkan {(pgAP-1)*perPageAP+1}–{Math.min(pgAP*perPageAP,filteredPlans.length)} dari {filteredPlans.length}</span>
+            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+              <button onClick={()=>setPageAP(p=>Math.max(1,p-1))} disabled={pgAP<=1} style={pgBtn(pgAP<=1)}>‹ Prev</button>
+              <span style={{ fontSize:12.5, color:C.textMd }}>Hal {pgAP} / {totalPageAP}</span>
+              <button onClick={()=>setPageAP(p=>Math.min(totalPageAP,p+1))} disabled={pgAP>=totalPageAP} style={pgBtn(pgAP>=totalPageAP)}>Next ›</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -944,19 +1050,19 @@ function KinerjaAO({ m }) {
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
       <div style={{ display:"grid", gridTemplateColumns: w>=1000?"1fr 1fr":"1fr", gap:12 }}>
         <div style={card}>
-          <CardTitle>Top 10 AO — Outstanding</CardTitle>
+          <CardTitle>Top 10 Mantri — Outstanding</CardTitle>
           <BarH data={top} dataKey="osJt" nameKey="nama" color={C.kpiTeal} fmt={(v)=>fMilV(v/1000)} />
         </div>
         <div style={card}>
-          <CardTitle>Top 10 AO — Debitur Risiko Tinggi</CardTitle>
+          <CardTitle>Top 10 Mantri — Debitur Risiko Tinggi</CardTitle>
           <BarH data={[...m.perAO].sort((a,b)=>b.tinggi-a.tinggi).slice(0,10)} dataKey="tinggi" nameKey="nama" color={C.kpiRed} fmt={(v)=>fNum(v)} />
         </div>
       </div>
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
-        <div style={{ padding:"14px 16px 0" }}><CardTitle>Rekap Kinerja per AO / Mantri</CardTitle></div>
+        <div style={{ padding:"14px 16px 0" }}><CardTitle>Rekap Kinerja per Mantri</CardTitle></div>
         <div style={{ maxHeight:420, overflowY:"auto", overflowX:"auto" }}>
           <Tabel stickyHeader
-            headers={["AO / Mantri","Unit Kerja","Outstanding","Jml Debitur","Risiko Tinggi","Action Plan","Berhasil"]}
+            headers={["Mantri","Unit Kerja","Outstanding","Jml Debitur","Risiko Tinggi","Action Plan","Berhasil"]}
             colW={[130,140,120,90,100,90,90]}
             rows={m.perAO.map(k=>[
               k.nama, k.uker, fJt(k.osJt), k.deb,
@@ -1048,12 +1154,30 @@ function Laporan({ m, perms }) {
   );
 }
 
-function Pengaturan({ perms }) {
+function Pengaturan({ perms, onUpload, uploadedData, onReset }) {
   const w = useWindowWidth();
   const [status, setStatus] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const fileRef = useRef(null);
   const cols = w >= 900 ? "1fr 1fr" : "1fr";
   const canEdit = perms?.editData;
-  const handleUpload = (jenis) => { if(!canEdit) return; setStatus({ jenis, loading:true }); setTimeout(()=>setStatus({ jenis, loading:false, record: jenis==="lw321"?DEBITUR.length:13 }), 1400); };
+
+  const handleUpload = async (file) => {
+    if (!file || !canEdit) return;
+    setUploading(true);
+    setUploadError(null);
+    setStatus({ jenis:"lw321", loading:true });
+    try {
+      await onUpload(file);
+      setStatus(null);
+    } catch (err) {
+      setUploadError(err.message || 'Gagal membaca file');
+      setStatus(null);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
@@ -1118,25 +1242,46 @@ function Pengaturan({ perms }) {
           Total 45 kolom pada file LW321 · Sistem membaca kolom wajib: CIFNO, NAMA_DEBITUR, KODE_UKER, KOL_ADK, BALANCE_IDR, TUNGGAKAN_POKOK, PN_PENGELOLA_1
         </div>
       </div>
+      <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={e=>handleUpload(e.target.files?.[0])} />
       <div style={{ display:"grid", gridTemplateColumns:cols, gap:12 }}>
-        {[
-          { id:"lw321", title:"Import Data LW321 (Core Banking)", desc:"Format Excel (.xlsx) / CSV · 45 kolom. Kolom wajib: CIFNO, NAMA_DEBITUR, KODE_UKER, KOL_ADK, BALANCE_IDR, TUNGGAKAN_POKOK, PN_PENGELOLA_1." },
-          { id:"ckpn", title:"Import CKPN per Unit Kerja", desc:"Format Excel (.xlsx) / CSV. Kolom: KODE_UKER, PERIODE, CKPN_EXISTING, CKPN_POTENSIAL, COVERAGE_RATIO." },
-        ].map(b=>(
-          <div key={b.id} style={{ ...card, padding:20 }}>
-            <div style={{ fontSize:14, fontWeight:600, color:C.navy, marginBottom:4 }}>{b.title}</div>
-            <div style={{ fontSize:12, color:C.gray, marginBottom:14 }}>{b.desc}</div>
-            <div style={{ border:`2px dashed ${C.border}`, borderRadius:8, padding:"22px", textAlign:"center", marginBottom:12, color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", gap:6 }}>
-              <Ic n="upload" size={22} /> Klik atau drag file Excel/CSV ke sini
+        {/* LW321 — fungsional */}
+        <div style={{ ...card, padding:20 }}>
+          <div style={{ fontSize:14, fontWeight:600, color:C.navy, marginBottom:4 }}>Import Data LW321 (Core Banking)</div>
+          <div style={{ fontSize:12, color:C.gray, marginBottom:14 }}>Format Excel (.xlsx) · Header di baris ke-4 · Diupdate tiap hari kerja (H+1)</div>
+          {uploadedData ? (
+            <div style={{ padding:"14px", background:C.greenLt, border:`1px solid ${C.green}`, borderRadius:8, marginBottom:12 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:C.green, marginBottom:4 }}>✓ Data Real Aktif</div>
+              <div style={{ fontSize:12, color:C.green }}>Periode: {uploadedData.periodeLabel} · {uploadedData.periodeStr}</div>
+              <div style={{ fontSize:12, color:C.green }}>{fNum(uploadedData.totalRows)} debitur terbaca</div>
+              {uploadedData.datePrinted && <div style={{ fontSize:11, color:C.green, marginTop:2, opacity:.8 }}>Dicetak: {uploadedData.datePrinted}</div>}
             </div>
-            <button onClick={()=>handleUpload(b.id)} disabled={!canEdit} style={{ width:"100%", padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7, cursor:canEdit?"pointer":"not-allowed", fontSize:13, fontWeight:500, opacity:canEdit?1:.45 }}>Upload &amp; Proses</button>
-            {status?.jenis===b.id && (
-              <div style={{ marginTop:10, padding:"10px 12px", borderRadius:7, background:status.loading?C.grayLt:C.greenLt, color:status.loading?C.gray:C.green, fontSize:13 }}>
-                {status.loading ? "⏳ Memproses data..." : `✓ Berhasil import ${fNum(status.record)} ${b.id==="lw321"?"record · Risk scoring otomatis dijalankan":"unit kerja"}`}
-              </div>
-            )}
+          ) : (
+            <div
+              onClick={()=>canEdit && fileRef.current?.click()}
+              onDragOver={e=>e.preventDefault()}
+              onDrop={e=>{ e.preventDefault(); handleUpload(e.dataTransfer.files?.[0]); }}
+              style={{ border:`2px dashed ${uploadError?C.red:C.border}`, borderRadius:8, padding:"22px", textAlign:"center", marginBottom:12, color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", gap:6, cursor:canEdit?"pointer":"default", background:canEdit?"transparent":C.grayLt }}>
+              <Ic n="upload" size={22} />
+              {uploading ? "⏳ Memproses file..." : "Klik atau drag file LW321 (.xlsx) ke sini"}
+            </div>
+          )}
+          {uploadError && <div style={{ marginBottom:10, padding:"8px 12px", background:C.redLt, border:`1px solid ${C.red}`, borderRadius:7, fontSize:12, color:C.red }}>{uploadError}</div>}
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={()=>canEdit && fileRef.current?.click()} disabled={!canEdit||uploading} style={{ flex:1, padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7, cursor:canEdit?"pointer":"not-allowed", fontSize:13, fontWeight:500, opacity:canEdit?1:.45 }}>
+              {uploading ? "Memproses..." : uploadedData ? "Upload Ulang" : "Upload & Proses"}
+            </button>
+            {uploadedData && <button onClick={onReset} style={{ padding:"9px 14px", background:C.white, color:C.red, border:`1px solid ${C.red}`, borderRadius:7, cursor:"pointer", fontSize:13 }}>Reset</button>}
           </div>
-        ))}
+        </div>
+        {/* CKPN — masih mock */}
+        <div style={{ ...card, padding:20 }}>
+          <div style={{ fontSize:14, fontWeight:600, color:C.navy, marginBottom:4 }}>Import CKPN per Unit Kerja</div>
+          <div style={{ fontSize:12, color:C.gray, marginBottom:14 }}>Format Excel (.xlsx) / CSV. Kolom: KODE_UKER, PERIODE, CKPN_EXISTING, CKPN_POTENSIAL, COVERAGE_RATIO.</div>
+          <div style={{ border:`2px dashed ${C.border}`, borderRadius:8, padding:"22px", textAlign:"center", marginBottom:12, color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", gap:6 }}>
+            <Ic n="upload" size={22} /> Klik atau drag file Excel/CSV ke sini
+          </div>
+          <button disabled style={{ width:"100%", padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7, cursor:"not-allowed", fontSize:13, fontWeight:500, opacity:.45 }}>Segera Hadir</button>
+        </div>
       </div>
     </div>
   );
@@ -1149,7 +1294,7 @@ const MENU = [
   { id:"debitur",     label:"Daftar Debitur",   icon:"users",     chevron:true, title:"DAFTAR DEBITUR", sub:"Monitoring seluruh debitur · BO Polewali" },
   { id:"action",      label:"Action Plan",      icon:"clipboard", chevron:true, title:"ACTION PLAN", sub:"Tindak lanjut penyelamatan debitur" },
   { id:"ckpn",        label:"Simulasi CKPN",    icon:"calc",      chevron:true, title:"SIMULASI CKPN", sub:"Estimasi CKPN & potensi penghematan" },
-  { id:"kinerjaAO",   label:"Kinerja AO",       icon:"userPerf",  chevron:true, title:"KINERJA AO / MANTRI", sub:"Rekap kinerja per Account Officer" },
+  { id:"kinerjaAO",   label:"Kinerja Mantri",    icon:"userPerf",  chevron:true, title:"KINERJA MANTRI", sub:"Rekap kinerja per Mantri" },
   { id:"kinerjaUnit", label:"Kinerja Unit",     icon:"building",  chevron:true, title:"KINERJA UNIT KERJA", sub:"Rekap kinerja per unit kerja" },
   { id:"laporan",     label:"Laporan",          icon:"doc",       title:"LAPORAN", sub:"Unduh laporan & riwayat data" },
   { id:"pengaturan",  label:"Pengaturan",       icon:"gear",      chevron:true, title:"PENGATURAN", sub:"Import data, unit kerja & parameter sistem" },
@@ -1161,7 +1306,7 @@ function Sidebar({ page, setPage, menus, periode }) {
   return (
     <aside style={{ width:236, background:C.sidebar, color:"#fff", display:"flex", flexDirection:"column", flexShrink:0, height:"100vh", overflowY:"auto" }}>
       <div style={{ padding:"16px 16px 8px", display:"flex", alignItems:"center", gap:10 }}>
-        <div style={{ background:"#fff", borderRadius:8, padding:"4px 9px", fontWeight:800, color:C.navy, fontSize:16, letterSpacing:.5 }}>BRI</div>
+        <img src="https://res.cloudinary.com/dnacoymkh/image/upload/v1781780191/Frame_468_rkqtlz.png" alt="BRI" style={{ height:48, width:"auto", display:"block" }} />
       </div>
       <div style={{ padding:"0 16px 14px" }}>
         <div style={{ fontSize:15, fontWeight:800, letterSpacing:.6 }}>EWS-CKPN</div>
@@ -1195,7 +1340,7 @@ function Login({ onLogin }) {
       background:`linear-gradient(135deg, ${C.sidebar} 0%, #0E2747 100%)`, padding:20, fontFamily:"system-ui,'Segoe UI',Roboto,sans-serif" }}>
       <div style={{ width:"100%", maxWidth:440, background:C.white, borderRadius:16, padding:"28px 26px", boxShadow:"0 20px 50px rgba(0,0,0,.3)" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-          <div style={{ background:C.navy, color:"#fff", borderRadius:8, padding:"4px 9px", fontWeight:800, fontSize:16, letterSpacing:.5 }}>BRI</div>
+          <img src="https://res.cloudinary.com/dnacoymkh/image/upload/v1780721401/Logo_header_mini_blue_lengkap_wblfyh.png" alt="BRI" style={{ height:46, width:"auto", display:"block" }} />
           <div>
             <div style={{ fontSize:16, fontWeight:800, color:C.navy, letterSpacing:.5 }}>EWS-CKPN</div>
             <div style={{ fontSize:11, color:C.gray }}>Early Warning System · BO Polewali</div>
@@ -1229,19 +1374,30 @@ export default function App() {
   const [page, setPage] = useState("dashboard");
   const [filters, setFilters] = useState({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" });
   const [profileOpen, setProfileOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [uploadedData, setUploadedData] = useState(null);
+
+  const handleUploadFile = async (file) => {
+    if (!file) return;
+    const result = await parseLW321(file);
+    setUploadedData(result);
+    setFilters(f => ({ ...f, uker:"semua", ao:"semua", segment:"semua", periode: result.periodeLabel }));
+  };
 
   const perms = role ? ROLES[role] : null;
 
+  const sourceDebitur = uploadedData ? uploadedData.debitur : DEBITUR;
+
   const list = useMemo(()=>{
     if (!perms) return [];
-    return DEBITUR.filter(d=>{
+    return sourceDebitur.filter(d=>{
       if (perms.scope==="ao" && d.aoId!==DEMO_AO_ID) return false;
       if (perms.scope==="bermasalah" && d.tier==="rendah") return false;
       return (filters.uker==="semua" || d.uker===filters.uker)
         && (filters.ao==="semua" || d.aoId===filters.ao)
         && (filters.segment==="semua" || d.segment===filters.segment);
     });
-  }, [filters, perms]);
+  }, [filters, perms, sourceDebitur]);
   const m = useMemo(()=>buildModel(list, filters.periode), [list, filters.periode]);
 
   if (!perms) return <Login onLogin={(id)=>{
@@ -1264,7 +1420,7 @@ export default function App() {
     kinerjaAO:   <KinerjaAO m={m} />,
     kinerjaUnit: <KinerjaUnit m={m} />,
     laporan:     <Laporan m={m} perms={perms} />,
-    pengaturan:  <Pengaturan perms={perms} />,
+    pengaturan:  <Pengaturan perms={perms} onUpload={handleUploadFile} uploadedData={uploadedData} onReset={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Mei 2026"})); }} />,
   };
   const aktifFilter = perms.scope==="all" && (filters.uker!=="semua" || filters.segment!=="semua" || filters.ao!=="semua");
 
@@ -1283,10 +1439,21 @@ export default function App() {
             </div>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-            <button style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 12px", border:`1px solid ${C.border}`, borderRadius:7, background:C.white, color:C.textMd, fontSize:12.5, cursor:"pointer" }}><Ic n="infoDoc" size={15} /> Info Data</button>
+            {uploadedData && (
+              <div style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 10px", background:C.greenLt, border:`1px solid ${C.green}`, borderRadius:7 }}>
+                <Ic n="check" size={14} style={{ color:C.green }} />
+                <span style={{ fontSize:11.5, color:C.green, fontWeight:600 }}>Data Real · {uploadedData.periodeStr}</span>
+                <button onClick={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Mei 2026"})); }} style={{ marginLeft:4, background:"none", border:"none", color:C.green, cursor:"pointer", fontSize:13, lineHeight:1, padding:0 }} title="Reset ke data mock">✕</button>
+              </div>
+            )}
+            <button onClick={()=>setInfoOpen(true)} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 12px", border:`1px solid ${C.border}`, borderRadius:7, background:C.white, color:C.textMd, fontSize:12.5, cursor:"pointer" }}><Ic n="infoDoc" size={15} /> Info Data</button>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span style={{ fontSize:12.5, color:C.gray }}>Periode</span>
-              <Select value={filters.periode} onChange={e=>setFilters(f=>({ ...f, periode:e.target.value }))} options={["Mar 2026","Apr 2026","Mei 2026"]} />
+              {uploadedData ? (
+                <span style={{ fontSize:12.5, fontWeight:600, color:C.navy, padding:"6px 10px", border:`1px solid ${C.border}`, borderRadius:7, background:C.white }}>{uploadedData.periodeLabel}</span>
+              ) : (
+                <Select value={filters.periode} onChange={e=>setFilters(f=>({ ...f, periode:e.target.value }))} options={["Mar 2026","Apr 2026","Mei 2026"]} />
+              )}
             </div>
             <div style={{ width:1, height:30, background:C.border }} />
             <div style={{ position:"relative" }}>
@@ -1325,6 +1492,84 @@ export default function App() {
           {pages[safePage]}
         </main>
       </div>
+
+      {infoOpen && (
+        <div onClick={()=>setInfoOpen(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.45)", zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+          <div onClick={e=>e.stopPropagation()} style={{ background:C.white, borderRadius:14, width:"100%", maxWidth:620, maxHeight:"88vh", overflowY:"auto", boxShadow:"0 20px 60px rgba(0,0,0,.25)" }}>
+            <div style={{ padding:"18px 22px", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <Ic n="infoDoc" size={18} style={{ color:C.navy }} />
+                <span style={{ fontSize:15, fontWeight:700, color:C.text }}>Informasi Data</span>
+              </div>
+              <button onClick={()=>setInfoOpen(false)} style={{ background:"none", border:"none", cursor:"pointer", color:C.gray, fontSize:18, lineHeight:1 }}>✕</button>
+            </div>
+
+            <div style={{ padding:"18px 22px", display:"flex", flexDirection:"column", gap:20 }}>
+
+              {/* Tentang Aplikasi */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:C.navy, textTransform:"uppercase", letterSpacing:.5, marginBottom:10 }}>Tentang Aplikasi</div>
+                <div style={{ ...card, background:C.navyLt, border:`1px solid #C7D9F0` }}>
+                  <div style={{ fontSize:13.5, fontWeight:700, color:C.navy, marginBottom:6 }}>EWS-CKPN — Early Warning System</div>
+                  <div style={{ fontSize:12.5, color:C.textMd, lineHeight:1.7 }}>
+                    Sistem pemantauan portofolio kredit berbasis risiko untuk mendukung pengambilan keputusan Pimpinan Cabang, Manajer Bisnis, dan Mantri di wilayah BO Polewali.
+                    Aplikasi ini menampilkan kondisi kolektibilitas debitur secara real-time, memfasilitasi input action plan penyelamatan, serta menyimulasikan estimasi CKPN berdasarkan skenario tindak lanjut.
+                  </div>
+                  <div style={{ marginTop:10, display:"flex", gap:8, flexWrap:"wrap" }}>
+                    {["Monitoring Portofolio","Early Warning Alert","Simulasi CKPN","Action Plan","Kinerja Mantri"].map(t=>(
+                      <span key={t} style={{ fontSize:11, padding:"2px 10px", borderRadius:20, background:C.white, color:C.navy, border:`1px solid #C7D9F0`, fontWeight:600 }}>{t}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sumber Data */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:C.navy, textTransform:"uppercase", letterSpacing:.5, marginBottom:10 }}>Sumber Data & Pembaruan</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                  {[
+                    { label:"Sumber Data",       value:"Sistem Informasi Kredit BRI (SIKREDIT) · Core Banking", icon:"infoDoc" },
+                    { label:"Cakupan Wilayah",   value:"BO Polewali — 1 Kanca, 2 KCP, 10 Unit Kerja", icon:"building" },
+                    { label:"Total Debitur",      value:`${fNum(DEBITUR.length)} debitur aktif (data mock per Mei 2026)`, icon:"users" },
+                    { label:"Periode Tersedia",   value:"Maret 2026 · April 2026 · Mei 2026", icon:"calendar" },
+                    { label:"Tanggal Ekstrak",    value:"31 Mei 2026 · 17:00 WIB", icon:"check" },
+                    { label:"Frekuensi Update",   value:"Bulanan — setiap akhir bulan buku", icon:"infoCircle" },
+                  ].map((r,i)=>(
+                    <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"9px 12px", background:C.grayLt, borderRadius:8 }}>
+                      <Ic n={r.icon} size={15} style={{ color:C.navy, marginTop:1, flexShrink:0 }} />
+                      <div style={{ fontSize:12, color:C.gray, width:130, flexShrink:0 }}>{r.label}</div>
+                      <div style={{ fontSize:12.5, color:C.text, fontWeight:500 }}>{r.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Metodologi */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:C.navy, textTransform:"uppercase", letterSpacing:.5, marginBottom:10 }}>Metodologi Perhitungan</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                  {[
+                    { judul:"Klasifikasi Risiko", isi:"Rendah = Kol 1 (DPD 0) · Sedang = Kol 2A & 2B (DPD 1–90) · Tinggi = Kol 3–5 (DPD > 90)" },
+                    { judul:"Skor Risiko (1–99)", isi:"Berbasis DPD dan riwayat pembayaran. Skor ≥ 80 = rendah, 60–79 = sedang, < 60 = tinggi. Semakin rendah skor, semakin berisiko." },
+                    { judul:"CKPN Existing",      isi:"Dihitung berdasarkan Outstanding × Coverage Rate per kolektibilitas: Kol 1→1%, 2A→5%, 2B→15%, 3→50%, 4→75%, 5→100%." },
+                    { judul:"Potensi Penghematan CKPN", isi:"Estimasi penurunan CKPN jika action plan berhasil menurunkan kolektibilitas debitur satu tingkat ke atas (mis. Kol 3→2B)." },
+                    { judul:"NPL Ratio",          isi:"Outstanding Kol 3–5 dibagi Total Outstanding × 100%. Mengacu pada definisi NPL standar OJK." },
+                  ].map((m,i)=>(
+                    <div key={i} style={{ padding:"10px 14px", border:`1px solid ${C.border}`, borderRadius:8, background:C.white }}>
+                      <div style={{ fontSize:12.5, fontWeight:700, color:C.navy, marginBottom:4 }}>{m.judul}</div>
+                      <div style={{ fontSize:12, color:C.textMd, lineHeight:1.6 }}>{m.isi}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ fontSize:11, color:C.gray, textAlign:"center", paddingTop:4, borderTop:`1px solid ${C.border}` }}>
+                Versi 1.1 · Data bersifat simulasi untuk keperluan demo · © 2026 BRI BO Polewali
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
