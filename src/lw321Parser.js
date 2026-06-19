@@ -87,18 +87,20 @@ export function parseLW321(file) {
         const idx = (name) => headers.indexOf(name.toUpperCase());
 
         const I = {
-          periode:      idx('PERIODE'),
-          kodeUker:     idx('KODE_UKER'),
-          uker:         idx('UKER'),
-          nama:         idx('NAMA_DEBITUR'),
-          cif:          idx('CIFNO'),
-          tglMenunggak: idx('TGL_MENUNGGAK'),
-          kolAdk:       idx('KOL_ADK'),
-          tunggakan:    idx('TUNGGAKAN POKOK'),
-          descSegmen:   idx('DESC SEGMEN LV1'),
-          mantri:       idx('PN PENGELOLA 1'),
-          balance:      idx('BALANCE DALAM IDR'),
-          plafon:       idx('PLAFON DALAM IDR'),
+          periode:          idx('PERIODE'),
+          kodeUker:         idx('KODE_UKER'),
+          uker:             idx('UKER'),
+          nama:             idx('NAMA_DEBITUR'),
+          cif:              idx('CIFNO'),
+          tglMenunggak:     idx('TGL_MENUNGGAK'),
+          kolAdk:           idx('KOL_ADK'),
+          tunggakan:        idx('TUNGGAKAN POKOK'),
+          tunggakanBunga:   idx('TUNGGAKAN BUNGA'),
+          tunggakanPinalti: idx('TUNGGAKAN PINALTI'),
+          descSegmen:       idx('DESC SEGMEN LV1'),
+          mantri:           idx('PN PENGELOLA 1'),
+          balance:          idx('BALANCE DALAM IDR'),
+          plafon:           idx('PLAFON DALAM IDR'),
         };
 
         // Validasi kolom wajib
@@ -152,17 +154,19 @@ export function parseLW321(file) {
           const descSegmenRaw = String(row[I.descSegmen] || '').trim();
           const descSegmen = descSegmenRaw.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 
-          const tunggakanPokokIdr = parseFloat(row[I.tunggakan]) || 0;
-          const tPokok = tunggakanPokokIdr > 0 ? Math.round(tunggakanPokokIdr / 1_000_000) : Math.round(balanceJt * (dpd / 360));
+          const tunggakanPokokIdr   = parseFloat(row[I.tunggakan])        || 0;
+          const tunggakanBungaIdr   = parseFloat(row[I.tunggakanBunga])   || 0;
+          const tunggakanPinaltiIdr = parseFloat(row[I.tunggakanPinalti]) || 0;
           const months = Math.ceil(dpd / 30) || 0;
-          const tBunga = Math.round(tPokok * 0.15 / 12 * months);
-          const tDenda = Math.round(tPokok * 0.02 * months);
-          const tPenalty = dpd > 90 ? Math.round(tPokok * 0.01) : 0;
+          const tPokok   = tunggakanPokokIdr   > 0 ? Math.round(tunggakanPokokIdr   / 1_000_000) : Math.round(balanceJt * (dpd / 360));
+          const tBunga   = tunggakanBungaIdr   > 0 ? Math.round(tunggakanBungaIdr   / 1_000_000) : Math.round(tPokok * 0.15 / 12 * months);
+          const tDenda   = Math.round(tPokok * 0.02 * months); // tidak ada di file, tetap estimasi
+          const tPenalty = tunggakanPinaltiIdr > 0 ? Math.round(tunggakanPinaltiIdr / 1_000_000) : (dpd > 90 ? Math.round(tPokok * 0.01) : 0);
 
           debitur.push({
             cif:      String(row[I.cif] || '').trim(),
             nama:     String(row[I.nama] || '').trim(),
-            ao:       `Mantri ${mantriNama}`,
+            ao:       mantriNama,
             aoId:     mantriId,
             pn:       mantriPn,
             uker:     ukerKode,

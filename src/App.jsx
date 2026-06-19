@@ -93,8 +93,7 @@ const rng = mulberry32(20260531);
 const AO = [];
 UKER.forEach(u => {
   const k = u.tipe==="KANCA" ? 5 : u.tipe==="KCP" ? 3 : 2;
-  const role = "Mantri";
-  for (let i=0;i<k;i++) AO.push({ id:`${u.kode}-${i}`, nama:`${role} ${pick(NAMA_AO,rng)}`, uker:u.kode, pn:`00${u.kode}${String(i).padStart(2,"0")}` });
+  for (let i=0;i<k;i++) AO.push({ id:`${u.kode}-${i}`, nama:pick(NAMA_AO,rng), uker:u.kode, pn:`00${u.kode}${String(i).padStart(2,"0")}` });
 });
 
 const pickKol = () => { const r=rng(); return r<0.83?"1":r<0.88?"2A":r<0.92?"2B":r<0.955?"3":r<0.98?"4":"5"; };
@@ -140,24 +139,54 @@ const DEMO_AO_UKER = UKER.find(u=>u.kode===DEMO_AO.uker);
 const DEMO_KEPALA_UKER_KODE = "5037";
 const DEMO_KEPALA_UNIT = UKER.find(u=>u.kode===DEMO_KEPALA_UKER_KODE);
 
-const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","pengaturan"];
+const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","manajemen","pengaturan"];
 const ROLES = {
-  pinca: { id:"pinca", nama:"Hery Susanto", title:"Pimpinan Cabang", icon:"userCircle", color:C.kpiBlue,
-    desc:"Monitoring seluruh cabang & unit kerja", akses:"Lihat semua data · read-only (mode pantau)",
-    scope:"all", editAction:false, editData:false, exportReport:true, menus:ALL_MENUS },
-  mb: { id:"mb", nama:"Dewi Anggraini", title:"Manajer Bisnis", icon:"userPerf", color:C.kpiPurple,
-    desc:"Pengendalian portofolio cabang", akses:"Kelola action plan, simulasi CKPN & kelola data",
-    scope:"all", editAction:true, editData:true, exportReport:true, menus:ALL_MENUS },
-  ao: { id:"ao", nama:DEMO_AO?DEMO_AO.nama:"Account Officer", title:"Account Officer / Mantri", icon:"userPerf", color:C.kpiTeal,
-    desc:`Tindak lanjut debitur · ${DEMO_AO_UKER?DEMO_AO_UKER.nama:""}`, akses:"Hanya portofolio sendiri · input action plan",
-    scope:"ao", editAction:true, editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
-  collection: { id:"collection", nama:"Rudi Hartono", title:"Collection Officer", icon:"userPerf", color:C.kpiAmber,
-    desc:"Penagihan debitur bermasalah", akses:"Debitur Kol 2-5 · update penagihan",
-    scope:"bermasalah", editAction:true, editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
-  kepalaUnit: { id:"kepalaUnit", nama:"Ahmad Fauzi", title:"Kepala Unit Polewali", icon:"building", color:C.kpiTeal,
+  pinca:      { id:"pinca",      nama:"Hery Santoso",   title:"Pimpinan Cabang",        icon:"userCircle", color:C.kpiBlue,
+    desc:"Monitoring seluruh cabang & unit kerja",      akses:"Lihat semua data · read-only (mode pantau)",
+    scope:"all",         editAction:false, editData:false, exportReport:true,
+    menus:ALL_MENUS.filter(m=>m!=="pengaturan") },
+  mb:         { id:"mb",         nama:"Dewi Anggraini", title:"Manajer Bisnis",          icon:"userPerf",   color:C.kpiPurple,
+    desc:"Pengendalian portofolio cabang",              akses:"Kelola action plan, simulasi CKPN, upload data & pengaturan",
+    scope:"all",         editAction:true,  editData:true,  exportReport:true,  menus:ALL_MENUS },
+  kepalaUnit: { id:"kepalaUnit", nama:"Ahmad Fauzi",    title:"Kepala Unit Polewali",    icon:"building",   color:C.kpiTeal,
     desc:`Pengelolaan unit kerja · ${DEMO_KEPALA_UNIT?.nama||""}`, akses:"Hanya data unit sendiri · input action plan",
-    scope:"uker", editAction:true, editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
+    scope:"uker",        editAction:true,  editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
+  ao:         { id:"ao",         nama:DEMO_AO?.nama||"Mantri", title:"Account Officer / Mantri", icon:"userPerf", color:C.kpiTeal,
+    desc:`Tindak lanjut debitur · ${DEMO_AO_UKER?.nama||""}`,    akses:"Hanya portofolio sendiri · input action plan",
+    scope:"ao",          editAction:true,  editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
+  collection: { id:"collection", nama:"Rudi Hartono",   title:"Collection Officer",      icon:"userPerf",   color:C.kpiAmber,
+    desc:"Penagihan debitur bermasalah",                akses:"Debitur Kol 2-5 · update penagihan",
+    scope:"bermasalah",  editAction:true,  editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
+  admin:      { id:"admin",      nama:"Admin IT",       title:"Administrator IT",        icon:"gear",       color:C.gray,
+    desc:"Manajemen user & konfigurasi sistem",         akses:"Kelola akun pengguna · upload data",
+    scope:"all",         editAction:false, editData:false, exportReport:false, menus:["dashboard","manajemen","pengaturan"] },
 };
+
+const _aoU = (ao, idx) => {
+  const base = ao.nama.toLowerCase().replace(/\s+/g,".");
+  return `${base}.${String(idx).padStart(2,"0")}`;
+};
+const USERS = [
+  // pn = identitas unik pegawai, dipakai sistem untuk link ke data (LW321 pakai pn sebagai pembeda jika nama sama)
+  // Admin IT — kelola user & upload data, tidak akses data kredit
+  { id:"u-it-1",   pn:"90188658", nama:"Muhammad Farid Syam", username:"farid.syam",      password:"demo123", role:"admin",      uker:null,         aoId:null,     aktif:true },
+  { id:"u-it-2",   pn:"90188700", nama:"Deni Suhardiman",    username:"deni.suhardiman", password:"demo123", role:"admin",      uker:null,         aoId:null,     aktif:true },
+  { id:"u-pinca",  pn:"00010001", nama:"Hery Santoso",   username:"hery.santoso",   password:"demo123", role:"pinca",      uker:null,         aoId:null,     aktif:true },
+  { id:"u-mb",     pn:"00010002", nama:"Dewi Anggraini", username:"dewi.anggraini", password:"demo123", role:"mb",         uker:null,         aoId:null,     aktif:true },
+  // Kepala Unit
+  { id:"u-ku-0",   pn:"00025901", nama:"Ahmad Fauzi",    username:"ahmad.fauzi",    password:"demo123", role:"kepalaUnit", uker:UKER[0].kode, aoId:null,     aktif:true },
+  { id:"u-ku-1",   pn:"00064501", nama:"Bachtiar Halim", username:"bachtiar.halim", password:"demo123", role:"kepalaUnit", uker:UKER[1].kode, aoId:null,     aktif:true },
+  { id:"u-ku-2",   pn:"00204201", nama:"Sri Wahyuni",    username:"sri.wahyuni",    password:"demo123", role:"kepalaUnit", uker:UKER[2].kode, aoId:null,     aktif:true },
+  // AO/Mantri — pn diambil dari data AO (sama dengan PN di LW321), aoId untuk filter data binaan
+  { id:"u-ao-0",   pn:AO[0]?.pn, nama:AO[0]?.nama||"Mantri 1", username:_aoU(AO[0]||{nama:"mantri 1"},0), password:"demo123", role:"ao", uker:AO[0]?.uker, aoId:AO[0]?.id, aktif:true },
+  { id:"u-ao-1",   pn:AO[1]?.pn, nama:AO[1]?.nama||"Mantri 2", username:_aoU(AO[1]||{nama:"mantri 2"},1), password:"demo123", role:"ao", uker:AO[1]?.uker, aoId:AO[1]?.id, aktif:true },
+  { id:"u-ao-2",   pn:AO[2]?.pn, nama:AO[2]?.nama||"Mantri 3", username:_aoU(AO[2]||{nama:"mantri 3"},2), password:"demo123", role:"ao", uker:AO[2]?.uker, aoId:AO[2]?.id, aktif:true },
+  { id:"u-ao-3",   pn:AO[3]?.pn, nama:AO[3]?.nama||"Mantri 4", username:_aoU(AO[3]||{nama:"mantri 4"},3), password:"demo123", role:"ao", uker:AO[3]?.uker, aoId:AO[3]?.id, aktif:true },
+  { id:"u-ao-4",   pn:AO[4]?.pn, nama:AO[4]?.nama||"Mantri 5", username:_aoU(AO[4]||{nama:"mantri 5"},4), password:"demo123", role:"ao", uker:AO[4]?.uker, aoId:AO[4]?.id, aktif:true },
+  // Collection Officer
+  { id:"u-col-0",  pn:"00025910", nama:"Rudi Hartono",   username:"rudi.hartono",   password:"demo123", role:"collection", uker:UKER[0].kode, aoId:null,     aktif:true },
+  { id:"u-col-1",  pn:"00064510", nama:"Lina Marlina",   username:"lina.marlina",   password:"demo123", role:"collection", uker:UKER[1].kode, aoId:null,     aktif:true },
+];
 
 const PERIODE = {
   "Mei 2026": { f:1.00, date:"31 Mei 2026", months:["Des '25","Jan '26","Feb '26","Mar '26","Apr '26","Mei '26"], months12:["Jun '25","Jul '25","Agu '25","Sep '25","Okt '25","Nov '25","Des '25","Jan '26","Feb '26","Mar '26","Apr '26","Mei '26"] },
@@ -208,7 +237,22 @@ function buildModel(list, periode) {
   const ser = (cur,pat)=>pat.map((p,i)=>({ bln:P.months[i], nilai:+(cur*p).toFixed(3) }));
   const delta = (pat)=> (1-pat[4]/pat[5])*100;
 
-  const top10 = [...list].filter(d=>d.tier==="tinggi").sort((a,b)=>b.dpd-a.dpd).slice(0,10);
+  // Deduplikasi per CIF: satu debitur bisa punya >1 rekening di LW321
+  const cifMapT10 = {};
+  list.filter(d=>d.tier==="tinggi").forEach(d=>{
+    if (!cifMapT10[d.cif]) {
+      cifMapT10[d.cif] = { ...d };
+    } else {
+      cifMapT10[d.cif].osJt += d.osJt;
+      cifMapT10[d.cif].tunggakanTotal = (cifMapT10[d.cif].tunggakanTotal||0) + (d.tunggakanTotal||0);
+      if (d.dpd > cifMapT10[d.cif].dpd) {
+        cifMapT10[d.cif].dpd   = d.dpd;
+        cifMapT10[d.cif].kol   = d.kol;
+        cifMapT10[d.cif].skor  = d.skor;
+      }
+    }
+  });
+  const top10 = Object.values(cifMapT10).sort((a,b)=>b.dpd-a.dpd).slice(0,10);
 
   const ringkasanEW = [
     { label:"Risiko Tinggi", value:tier.tinggi, color:C.red,   pct: totalDeb?tier.tinggi/totalDeb*100:0 },
@@ -345,15 +389,15 @@ const Badge = ({ level }) => (
 const SkorPill = ({ s }) => (
   <span style={{ display:"inline-block", minWidth:30, textAlign:"center", padding:"2px 8px", borderRadius:12, background:skorColor(s), color:"#fff", fontSize:11, fontWeight:700 }}>{s}</span>
 );
-const KpiCard = ({ icon, color, label, prefix, value, sub, subColor }) => (
-  <div style={{ ...card, padding:"12px 14px", display:"flex", flexDirection:"column", minWidth:0 }}>
-    <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:6 }}>
-      <div style={{ width:34, height:34, borderRadius:8, background:color, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={icon} size={18} sw={1.9} /></div>
-      <div style={{ fontSize:10.5, fontWeight:600, color:C.gray, letterSpacing:.3, textTransform:"uppercase", lineHeight:1.2 }}>{label}</div>
+const KpiCard = ({ icon, color, label, prefix, value, sub, subColor, big }) => (
+  <div style={{ ...card, padding: big?"18px 20px":"12px 14px", display:"flex", flexDirection:"column", minWidth:0 }}>
+    <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: big?10:6 }}>
+      <div style={{ width:big?44:34, height:big?44:34, borderRadius:big?11:8, background:color, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={icon} size={big?22:18} sw={1.9} /></div>
+      <div style={{ fontSize:big?11.5:10.5, fontWeight:600, color:C.gray, letterSpacing:.3, textTransform:"uppercase", lineHeight:1.2 }}>{label}</div>
     </div>
-    {prefix && <div style={{ fontSize:11.5, color:C.gray, marginBottom:-3 }}>{prefix}</div>}
-    <div style={{ fontSize:22, fontWeight:700, color:C.text }}>{value}</div>
-    <div style={{ fontSize:11, color:subColor || C.gray, marginTop:2, fontWeight:500 }}>{sub}</div>
+    {prefix && <div style={{ fontSize:big?13:11.5, color:C.gray, marginBottom:-4 }}>{prefix}</div>}
+    <div style={{ fontSize:big?30:22, fontWeight:700, color:C.text, lineHeight:1.15 }}>{value}</div>
+    <div style={{ fontSize:big?12:11, color:subColor || C.gray, marginTop:3, fontWeight:500 }}>{sub}</div>
   </div>
 );
 const renderActiveSlice = (props) => {
@@ -492,24 +536,27 @@ function DashboardPinca({ m, go }) {
   const row4      = w >= 1000 ? "1.3fr 1fr" : "1fr";
   const up = (x)=>(x>=0?"▲ ":"▼ ")+fPct(Math.abs(x),2)+" vs bln lalu";
 
-  const KPI = [
-    // Baris 1: bisnis & risiko utama
-    { icon:"wallet",     color:C.kpiBlue,   label:"Total Outstanding",       prefix:"Rp", value:fMil(m.totalOsJt).replace("Rp ",""), sub:up(m.deltas.os), subColor:C.green },
-    { icon:"thumb",      color:C.kpiGreen,  label:"Realisasi Baru Bln Ini",  prefix:"Rp", value:fMil(m.realisasiJt||0).replace("Rp ",""), sub:"Pinjaman baru bulan ini", subColor:C.green },
-    { icon:"download",   color:C.kpiTeal,   label:"Nett Disbursed",          prefix:"Rp", value:fMil(m.nettDisbursed||0).replace("Rp ",""), sub:"Realisasi dikurangi pelunasan", subColor:C.navy },
-    { icon:"shield",     color:C.kpiPurple, label:"CKPN Existing",           prefix:"Rp", value:fMil(m.ckpnExisting).replace("Rp ",""), sub:up(m.deltas.ckpn), subColor:C.red },
-    { icon:"warning",    color:C.kpiRed,    label:"Debitur Bermasalah (3-5)",              value:fNum(m.tier.tinggi),                 sub:fPct(m.ringkasanEW[0].pct)+" dari total", subColor:C.red },
-    { icon:"wallet",     color:C.kpiRed,    label:"Total Tunggakan",         prefix:"Rp", value:fMil(m.totalTunggakanAll||0).replace("Rp ",""), sub:"Estimasi seluruh tunggakan", subColor:C.red },
-    // Baris 2: statistik debitur
-    { icon:"users",      color:C.kpiTeal,   label:"Total Debitur",                        value:fNum(m.totalDeb),                    sub:up(m.deltas.deb), subColor:C.green },
-    { icon:"infoCircle", color:C.kpiAmber,  label:"Debitur Risiko (2A-2B)",                value:fNum(m.tier.sedang),                 sub:fPct(m.ringkasanEW[1].pct)+" dari total", subColor:C.amber },
-    { icon:"thumb",      color:C.kpiGreen,  label:"Debitur Lancar",                        value:fNum(m.tier.rendah),                 sub:fPct(m.ringkasanEW[2].pct)+" dari total", subColor:C.navy },
+  const KPI_BIG = [
+    { icon:"wallet",  color:C.kpiBlue,   label:"Total Outstanding",       prefix:"Rp", value:fMil(m.totalOsJt).replace("Rp ",""),           sub:up(m.deltas.os),                                     subColor:m.deltas.os>=0?C.green:C.red },
+    { icon:"warning", color:C.kpiRed,    label:"Debitur Bermasalah (3-5)",              value:fNum(m.tier.tinggi),                            sub:fPct(m.ringkasanEW[0].pct)+" dari total debitur",    subColor:C.red },
+    { icon:"shield",  color:C.kpiPurple, label:"CKPN Existing",           prefix:"Rp", value:fMil(m.ckpnExisting).replace("Rp ",""),         sub:up(m.deltas.ckpn)+" · potensi hemat "+fMil(m.ckpnSaving).replace("Rp ",""), subColor:C.red },
+  ];
+  const KPI_SMALL = [
+    { icon:"thumb",      color:C.kpiGreen,  label:"Realisasi Baru Bln Ini",  prefix:"Rp", value:fMil(m.realisasiJt||0).replace("Rp ",""),        sub:"Pinjaman baru bulan ini",                           subColor:C.green },
+    { icon:"download",   color:C.kpiTeal,   label:"Nett Disbursed",          prefix:"Rp", value:fMil(m.nettDisbursed||0).replace("Rp ",""),        sub:"Realisasi dikurangi pelunasan",                     subColor:C.navy },
+    { icon:"wallet",     color:C.kpiRed,    label:"Total Tunggakan",         prefix:"Rp", value:fMil(m.totalTunggakanAll||0).replace("Rp ",""),    sub:"Estimasi seluruh tunggakan",                        subColor:C.red },
+    { icon:"users",      color:C.kpiTeal,   label:"Total Debitur",                        value:fNum(m.totalDeb),                                  sub:up(m.deltas.deb),                                    subColor:m.deltas.deb>=0?C.green:C.red },
+    { icon:"infoCircle", color:C.kpiAmber,  label:"Debitur Risiko (2A-2B)",               value:fNum(m.tier.sedang),                               sub:fPct(m.ringkasanEW[1].pct)+" dari total",            subColor:C.amber },
+    { icon:"thumb",      color:C.kpiGreen,  label:"Debitur Lancar",                        value:fNum(m.tier.rendah),                               sub:fPct(m.ringkasanEW[2].pct)+" dari total",            subColor:C.navy },
   ];
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      <div style={{ display:"grid", gridTemplateColumns: w>=720?"repeat(3,1fr)":"1fr", gap:12 }}>
+        {KPI_BIG.map((k,i)=><KpiCard key={i} big {...k} />)}
+      </div>
       <div style={{ display:"grid", gridTemplateColumns:kpiCols, gap:12 }}>
-        {KPI.map((k,i)=><KpiCard key={i} {...k} />)}
+        {KPI_SMALL.map((k,i)=><KpiCard key={i} {...k} />)}
       </div>
 
       <div style={{ display:"grid", gridTemplateColumns:chartsRow, gap:12 }}>
@@ -562,7 +609,7 @@ function DashboardPinca({ m, go }) {
               </thead>
               <tbody>
                 {top10Sorted.map((d,i)=>(
-                  <tr key={d.cif} style={{ borderBottom:`1px solid #F1F3F6` }}>
+                  <tr key={i} style={{ borderBottom:`1px solid #F1F3F6` }}>
                     <td style={{ padding:"8px 12px", color:C.gray }}>{i+1}</td>
                     <td style={{ padding:"8px 12px", color:C.textMd }}>{d.cif}</td>
                     <td style={{ padding:"8px 12px", color:C.text, fontWeight:500 }}>{d.nama}</td>
@@ -1544,8 +1591,8 @@ function Laporan({ m, list, perms }) {
             ["31/05/2026 07:29","CKPN per Unit Kerja","Mei 2026","13 unit kerja","84 KB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Dewi Anggraini"],
             ["30/04/2026 08:11","LW321 – Kolektibilitas","Apr 2026",fNum(DEBITUR.length-7)+" record","2,3 MB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Dewi Anggraini"],
             ["30/04/2026 08:14","CKPN per Unit Kerja","Apr 2026","13 unit kerja","81 KB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Dewi Anggraini"],
-            ["31/03/2026 09:02","LW321 – Kolektibilitas","Mar 2026",fNum(DEBITUR.length-12)+" record","2,2 MB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Hery Susanto"],
-            ["31/03/2026 09:04","CKPN per Unit Kerja","Mar 2026","13 unit kerja","79 KB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Hery Susanto"],
+            ["31/03/2026 09:02","LW321 – Kolektibilitas","Mar 2026",fNum(DEBITUR.length-12)+" record","2,2 MB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Hery Santoso"],
+            ["31/03/2026 09:04","CKPN per Unit Kerja","Mar 2026","13 unit kerja","79 KB",<span style={{ color:C.green, fontWeight:600 }}>✓ Sukses</span>,"Hery Santoso"],
             ["29/02/2026 10:45","LW321 – Kolektibilitas","Feb 2026",fNum(DEBITUR.length-19)+" record","2,1 MB",<span style={{ color:C.amber, fontWeight:600 }}>⚠ Parsial</span>,"Dewi Anggraini"],
           ]}
         />
@@ -1690,6 +1737,201 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset }) {
   );
 }
 
+function ManajemenUser({ localUsers, setLocalUsers }) {
+  const [formOpen, setFormOpen]  = useState(false);
+  const [editId,   setEditId]    = useState(null);
+  const emptyForm = { nama:"", pn:"", username:"", password:"", role:"mb", uker:"", aoId:"", aktif:true };
+  const [form, setForm] = useState(emptyForm);
+  const [err,  setErr]  = useState("");
+
+  const ROLE_OPT = [
+    { value:"mb",         label:"Manajer Bisnis" },
+    { value:"kepalaUnit", label:"Kepala Unit" },
+    { value:"ao",         label:"AO / Mantri" },
+    { value:"collection", label:"Collection Officer" },
+    { value:"admin",      label:"Admin IT" },
+  ];
+  const ROLE_COLOR = { pinca:C.kpiBlue, mb:C.kpiPurple, kepalaUnit:C.kpiTeal, ao:C.kpiTeal, collection:C.kpiAmber, admin:C.gray };
+  const ROLE_LABEL = { pinca:"Pimpinan Cabang", mb:"Manajer Bisnis", kepalaUnit:"Kepala Unit", ao:"AO / Mantri", collection:"Collection Officer", admin:"Admin IT" };
+
+  const autoUser = (nama) => {
+    const p = nama.trim().toLowerCase().split(/\s+/);
+    return p.length >= 2 ? `${p[0]}.${p[p.length-1]}` : p[0] || "";
+  };
+
+  const needUker  = !["mb","admin","pinca"].includes(form.role);
+  const needAoId  = form.role === "ao";
+
+  const openNew  = () => { setEditId(null); setForm(emptyForm); setErr(""); setFormOpen(true); };
+  const openEdit = (u) => { setEditId(u.id); setForm({ nama:u.nama, pn:u.pn||"", username:u.username, password:u.password, role:u.role, uker:u.uker||"", aoId:u.aoId||"", aktif:u.aktif }); setErr(""); setFormOpen(true); };
+  const cancel   = () => { setFormOpen(false); setEditId(null); setErr(""); };
+  const toggle   = (id) => setLocalUsers(prev => prev.map(u => u.id===id ? { ...u, aktif:!u.aktif } : u));
+
+  const save = () => {
+    if (!form.nama.trim() || !form.username.trim() || !form.password.trim()) { setErr("Nama, username, dan password wajib diisi."); return; }
+    if (needUker && !form.uker) { setErr("Pilih unit kerja terlebih dahulu."); return; }
+    const dupUser = localUsers.find(u => u.username === form.username.trim() && u.id !== editId);
+    if (dupUser) { setErr("Username sudah dipakai oleh akun lain."); return; }
+    if (editId) {
+      setLocalUsers(prev => prev.map(u => u.id===editId ? { ...u, ...form, uker:needUker?form.uker:null, aoId:needAoId?form.aoId:null } : u));
+    } else {
+      setLocalUsers(prev => [...prev, {
+        id: `u-new-${Date.now()}`, pn:form.pn, nama:form.nama.trim(),
+        username:form.username.trim(), password:form.password,
+        role:form.role, uker:needUker?form.uker:null, aoId:needAoId?form.aoId:null, aktif:form.aktif
+      }]);
+    }
+    cancel();
+  };
+
+  const lbl = { fontSize:12, fontWeight:600, color:C.textMd, display:"block", marginBottom:5 };
+  const inp = { padding:"9px 11px", border:`1.5px solid ${C.border}`, borderRadius:8, fontSize:13, color:C.text, width:"100%", boxSizing:"border-box", outline:"none", background:C.white };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+      {/* Header bar */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div style={{ fontSize:13, color:C.gray }}>
+          {localUsers.length} akun &nbsp;·&nbsp; <span style={{ color:C.green, fontWeight:600 }}>{localUsers.filter(u=>u.aktif).length} aktif</span>
+          {localUsers.filter(u=>!u.aktif).length > 0 && <span style={{ color:C.gray }}> &nbsp;·&nbsp; {localUsers.filter(u=>!u.aktif).length} nonaktif</span>}
+        </div>
+        {!formOpen && (
+          <button onClick={openNew}
+            style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 16px", background:C.navy, color:"#fff", border:"none", borderRadius:8, fontSize:13, fontWeight:600, cursor:"pointer" }}>
+            <span style={{ fontSize:17, lineHeight:1 }}>+</span> Tambah Akun
+          </button>
+        )}
+      </div>
+
+      {/* Form inline */}
+      {formOpen && (
+        <div style={{ ...card, border:`1.5px solid ${C.navy}40`, padding:"20px 22px" }}>
+          <div style={{ fontSize:14, fontWeight:700, color:C.navy, marginBottom:18 }}>
+            {editId ? "Edit Akun" : "Tambah Akun Baru"}
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"14px 16px" }}>
+            <div>
+              <label style={lbl}>Nama Lengkap</label>
+              <input style={inp} value={form.nama}
+                onChange={e=>{ const v=e.target.value; setForm(f=>({ ...f, nama:v, username:editId?f.username:autoUser(v) })); setErr(""); }}
+                placeholder="Nama lengkap pegawai" />
+            </div>
+            <div>
+              <label style={lbl}>PN (Nomor Pegawai)</label>
+              <input style={inp} value={form.pn} onChange={e=>{ setForm(f=>({ ...f, pn:e.target.value })); setErr(""); }}
+                placeholder="contoh: 90188658" />
+            </div>
+            <div>
+              <label style={lbl}>Username</label>
+              <input style={inp} value={form.username} onChange={e=>{ setForm(f=>({ ...f, username:e.target.value })); setErr(""); }}
+                placeholder="contoh: budi.santoso" />
+            </div>
+            <div>
+              <label style={lbl}>Password</label>
+              <input style={inp} type="text" value={form.password} onChange={e=>{ setForm(f=>({ ...f, password:e.target.value })); setErr(""); }}
+                placeholder="min. 6 karakter" />
+            </div>
+            <div>
+              <label style={lbl}>Role</label>
+              <select style={inp} value={form.role}
+                onChange={e=>{ setForm(f=>({ ...f, role:e.target.value, uker:"", aoId:"" })); setErr(""); }}>
+                {ROLE_OPT.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            {needUker && (
+              <div>
+                <label style={lbl}>Unit Kerja</label>
+                <select style={inp} value={form.uker}
+                  onChange={e=>{ setForm(f=>({ ...f, uker:e.target.value, aoId:"" })); setErr(""); }}>
+                  <option value="">— Pilih Unit Kerja —</option>
+                  {UKER.map(u=><option key={u.kode} value={u.kode}>{u.nama}</option>)}
+                </select>
+              </div>
+            )}
+            {needAoId && form.uker && (
+              <div>
+                <label style={lbl}>Link ke Data Mantri</label>
+                <select style={inp} value={form.aoId}
+                  onChange={e=>{ setForm(f=>({ ...f, aoId:e.target.value })); setErr(""); }}>
+                  <option value="">— Pilih Mantri —</option>
+                  {AO.filter(a=>a.uker===form.uker).map(a=><option key={a.id} value={a.id}>{a.pn} – {a.nama}</option>)}
+                </select>
+              </div>
+            )}
+            <div style={{ display:"flex", alignItems:"center", gap:8, paddingTop:18 }}>
+              <input type="checkbox" id="f-aktif" checked={form.aktif}
+                onChange={e=>setForm(f=>({ ...f, aktif:e.target.checked }))}
+                style={{ width:16, height:16, cursor:"pointer" }} />
+              <label htmlFor="f-aktif" style={{ fontSize:13, color:C.textMd, cursor:"pointer" }}>Akun aktif</label>
+            </div>
+          </div>
+          {err && <div style={{ marginTop:12, fontSize:12.5, color:C.red, background:C.redLt, padding:"8px 12px", borderRadius:7 }}>{err}</div>}
+          <div style={{ display:"flex", gap:8, marginTop:18 }}>
+            <button onClick={save}
+              style={{ padding:"8px 20px", background:C.navy, color:"#fff", border:"none", borderRadius:8, fontSize:13, fontWeight:700, cursor:"pointer" }}>
+              {editId ? "Simpan Perubahan" : "Tambah Akun"}
+            </button>
+            <button onClick={cancel}
+              style={{ padding:"8px 16px", background:C.grayLt, color:C.textMd, border:`1px solid ${C.border}`, borderRadius:8, fontSize:13, cursor:"pointer" }}>
+              Batal
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tabel */}
+      <div style={{ ...card, padding:0, overflowX:"auto" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+          <thead>
+            <tr style={{ background:C.grayLt }}>
+              {["Nama","PN","Username","Role","Unit Kerja","Status","Aksi"].map((h,i)=>(
+                <th key={i} style={{ padding:"10px 14px", color:C.gray, fontWeight:600, fontSize:11, textTransform:"uppercase", letterSpacing:.3, textAlign:"left", borderBottom:`1px solid ${C.border}`, whiteSpace:"nowrap" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {localUsers.map((u,i)=>{
+              const roleColor = ROLE_COLOR[u.role] || C.gray;
+              return (
+                <tr key={u.id} style={{ background:i%2===0?C.white:"#FAFBFD", borderBottom:`1px solid #F1F3F6`, opacity:u.aktif?1:.6 }}>
+                  <td style={{ padding:"10px 14px", fontWeight:600, color:C.text, whiteSpace:"nowrap" }}>{u.nama}</td>
+                  <td style={{ padding:"10px 14px", fontFamily:"monospace", fontSize:12, color:C.navy }}>{u.pn||"—"}</td>
+                  <td style={{ padding:"10px 14px", color:C.textMd }}>{u.username}</td>
+                  <td style={{ padding:"10px 14px" }}>
+                    <span style={{ fontSize:11, fontWeight:600, padding:"2px 10px", borderRadius:20, background:roleColor+"22", color:roleColor }}>
+                      {ROLE_LABEL[u.role]||u.role}
+                    </span>
+                  </td>
+                  <td style={{ padding:"10px 14px", color:C.gray, fontSize:12.5 }}>
+                    {u.uker ? (UKER.find(uk=>uk.kode===u.uker)?.nama||u.uker) : <span style={{ color:C.border }}>Semua Unit</span>}
+                  </td>
+                  <td style={{ padding:"10px 14px", whiteSpace:"nowrap" }}>
+                    {u.aktif
+                      ? <span style={{ fontSize:12, fontWeight:600, color:C.green }}>● Aktif</span>
+                      : <span style={{ fontSize:12, fontWeight:600, color:C.gray  }}>○ Nonaktif</span>}
+                  </td>
+                  <td style={{ padding:"10px 14px" }}>
+                    <div style={{ display:"flex", gap:6, whiteSpace:"nowrap" }}>
+                      <button onClick={()=>openEdit(u)}
+                        style={{ padding:"5px 12px", fontSize:12, fontWeight:600, background:C.navyLt, color:C.navy, border:"none", borderRadius:6, cursor:"pointer" }}>
+                        Edit
+                      </button>
+                      <button onClick={()=>toggle(u.id)}
+                        style={{ padding:"5px 12px", fontSize:12, fontWeight:600, background:u.aktif?C.redLt:C.greenLt, color:u.aktif?C.red:C.green, border:"none", borderRadius:6, cursor:"pointer" }}>
+                        {u.aktif?"Nonaktifkan":"Aktifkan"}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 const MENU = [
   { id:"dashboard",   label:"Dashboard",       icon:"dashboard", title:"DASHBOARD PORTOFOLIO", sub:"Data per __DATE__" },
   { id:"portfolio",   label:"Portfolio Status", icon:"portfolio", chevron:true, title:"PORTFOLIO STATUS", sub:"Status portofolio kredit · BO Polewali" },
@@ -1699,6 +1941,7 @@ const MENU = [
   { id:"ckpn",        label:"Simulasi CKPN",    icon:"calc",      chevron:true, title:"SIMULASI CKPN", sub:"Estimasi CKPN & potensi penghematan" },
   { id:"kinerjaAO",   label:"Kinerja Mantri",    icon:"userPerf",  chevron:true, title:"KINERJA MANTRI", sub:"Rekap kinerja per Mantri" },
   { id:"kinerjaUnit", label:"Kinerja Unit",     icon:"building",  chevron:true, title:"KINERJA UNIT KERJA", sub:"Rekap kinerja per unit kerja" },
+  { id:"manajemen",   label:"Manajemen User",   icon:"users",     chevron:true, title:"MANAJEMEN USER", sub:"Kelola akun & hak akses pengguna sistem" },
   { id:"pengaturan",  label:"Pengaturan",       icon:"gear",      chevron:true, title:"PENGATURAN", sub:"Import data, unit kerja & parameter sistem" },
 ];
 
@@ -1736,48 +1979,137 @@ function Sidebar({ page, setPage, menus, periode }) {
   );
 }
 
-function Login({ onLogin }) {
+function Login({ onLogin, localUsers }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPw,   setShowPw]   = useState(false);
+  const [error,    setError]    = useState("");
+  const [demoOpen, setDemoOpen] = useState(false);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const u = localUsers.find(u => u.username === username.trim().toLowerCase() && u.password === password);
+    if (!u)        { setError("Username atau password salah.");    return; }
+    if (!u.aktif)  { setError("Akun tidak aktif. Hubungi IT.");   return; }
+    setError(""); onLogin(u);
+  };
+
+  const ROLE_LABEL = { admin:"Admin IT", pinca:"Pimpinan Cabang", mb:"Manajer Bisnis", kepalaUnit:"Kepala Unit", ao:"AO / Mantri", collection:"Collection Officer" };
+  const grouped = ["admin","pinca","mb","kepalaUnit","ao","collection"]
+    .map(r=>({ role:r, users:localUsers.filter(u=>u.role===r && u.aktif) })).filter(g=>g.users.length);
+
+  const inp = (extra={}) => ({
+    padding:"10px 12px", border:`1.5px solid ${error?C.red:C.border}`, borderRadius:8,
+    fontSize:13.5, color:C.text, outline:"none", width:"100%", boxSizing:"border-box", ...extra
+  });
+
   return (
     <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center",
-      background:`linear-gradient(135deg, ${C.sidebar} 0%, #0E2747 100%)`, padding:20, fontFamily:"system-ui,'Segoe UI',Roboto,sans-serif" }}>
-      <div style={{ width:"100%", maxWidth:440, background:C.white, borderRadius:16, padding:"28px 26px", boxShadow:"0 20px 50px rgba(0,0,0,.3)" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-          <img src="https://res.cloudinary.com/dnacoymkh/image/upload/v1780721401/Logo_header_mini_blue_lengkap_wblfyh.png" alt="BRI" style={{ height:46, width:"auto", display:"block" }} />
-          <div>
-            <div style={{ fontSize:16, fontWeight:800, color:C.navy, letterSpacing:.5 }}>EWS-CKPN</div>
-            <div style={{ fontSize:11, color:C.gray }}>Early Warning System · BO Polewali</div>
+      background:`linear-gradient(135deg, ${C.sidebar} 0%, #0E2747 100%)`, padding:20,
+      fontFamily:"system-ui,'Segoe UI',Roboto,sans-serif" }}>
+      <div style={{ width:"100%", maxWidth:420, display:"flex", flexDirection:"column", gap:12 }}>
+
+        {/* Form login */}
+        <div style={{ background:C.white, borderRadius:16, padding:"28px 26px", boxShadow:"0 20px 50px rgba(0,0,0,.3)" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:22 }}>
+            <img src="https://res.cloudinary.com/dnacoymkh/image/upload/v1780721401/Logo_header_mini_blue_lengkap_wblfyh.png" alt="BRI" style={{ height:46, width:"auto" }} />
+            <div>
+              <div style={{ fontSize:16, fontWeight:800, color:C.navy, letterSpacing:.5 }}>EWS-CKPN</div>
+              <div style={{ fontSize:11, color:C.gray }}>Early Warning System · BO Polewali</div>
+            </div>
+          </div>
+          <div style={{ fontSize:18, fontWeight:700, color:C.text, marginBottom:2 }}>Masuk</div>
+          <div style={{ fontSize:12.5, color:C.gray, marginBottom:20 }}>Gunakan username & password dari petugas IT</div>
+
+          <form onSubmit={handleSubmit} style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            <div>
+              <label style={{ fontSize:12, fontWeight:600, color:C.textMd, display:"block", marginBottom:5 }}>Username</label>
+              <input type="text" autoFocus autoComplete="username"
+                value={username} onChange={e=>{ setUsername(e.target.value); setError(""); }}
+                placeholder="contoh: hery.santoso"
+                style={inp()} />
+            </div>
+            <div>
+              <label style={{ fontSize:12, fontWeight:600, color:C.textMd, display:"block", marginBottom:5 }}>Password</label>
+              <div style={{ position:"relative" }}>
+                <input type={showPw?"text":"password"} autoComplete="current-password"
+                  value={password} onChange={e=>{ setPassword(e.target.value); setError(""); }}
+                  placeholder="••••••••"
+                  style={inp({ paddingRight:54 })} />
+                <button type="button" onClick={()=>setShowPw(s=>!s)}
+                  style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)",
+                    background:"none", border:"none", cursor:"pointer", color:C.gray, fontSize:11.5, fontWeight:600, padding:"2px 4px" }}>
+                  {showPw?"Sembunyikan":"Tampilkan"}
+                </button>
+              </div>
+            </div>
+            {error && (
+              <div style={{ fontSize:12.5, color:C.red, background:C.redLt, padding:"9px 12px", borderRadius:7, fontWeight:500 }}>{error}</div>
+            )}
+            <button type="submit"
+              style={{ width:"100%", padding:"11px", background:C.navy, color:C.white, border:"none",
+                borderRadius:9, fontSize:14, fontWeight:700, cursor:"pointer", marginTop:2 }}>
+              Masuk
+            </button>
+          </form>
+
+          <div style={{ fontSize:11.5, color:C.gray, textAlign:"center", marginTop:16 }}>
+            Lupa password? Hubungi petugas IT cabang.
           </div>
         </div>
-        <div style={{ fontSize:18, fontWeight:700, color:C.text, marginTop:14 }}>Masuk ke Dashboard</div>
-        <div style={{ fontSize:12.5, color:C.gray, marginBottom:16 }}>Pilih akun demo sesuai role pengguna</div>
-        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-          {Object.values(ROLES).map(r=>(
-            <button key={r.id} onClick={()=>onLogin(r.id)} style={{ display:"flex", alignItems:"center", gap:12, textAlign:"left",
-              padding:"12px 14px", border:`1px solid ${C.border}`, borderRadius:10, background:C.white, cursor:"pointer", transition:"all .12s" }}
-              onMouseEnter={e=>{ e.currentTarget.style.borderColor=r.color; e.currentTarget.style.background=C.grayLt; }}
-              onMouseLeave={e=>{ e.currentTarget.style.borderColor=C.border; e.currentTarget.style.background=C.white; }}>
-              <div style={{ width:40, height:40, borderRadius:"50%", background:r.color, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={r.icon} size={22} /></div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:14, fontWeight:700, color:C.text }}>{r.title}</div>
-                <div style={{ fontSize:12, color:C.gray }}>{r.nama} · {r.akses}</div>
-              </div>
-              <Ic n="chevronR" size={16} style={{ color:C.gray }} />
-            </button>
-          ))}
+
+        {/* Demo Cepat */}
+        <div style={{ background:"rgba(255,255,255,.08)", borderRadius:12, border:"1px solid rgba(255,255,255,.13)", overflow:"hidden" }}>
+          <button onClick={()=>setDemoOpen(o=>!o)}
+            style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
+              padding:"11px 16px", background:"none", border:"none", cursor:"pointer", color:"rgba(255,255,255,.85)", fontSize:13, fontWeight:600 }}>
+            <span>Demo Cepat — pilih akun</span>
+            <Ic n={demoOpen?"chevronD":"chevronR"} size={16} style={{ color:"rgba(255,255,255,.6)" }} />
+          </button>
+          {demoOpen && (
+            <div style={{ padding:"0 10px 10px", display:"flex", flexDirection:"column", gap:2 }}>
+              {grouped.map(g=>(
+                <div key={g.role}>
+                  <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.45)", textTransform:"uppercase",
+                    letterSpacing:.6, padding:"8px 4px 4px" }}>{ROLE_LABEL[g.role]}</div>
+                  {g.users.map(u=>(
+                    <button key={u.id} onClick={()=>onLogin(u)}
+                      style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
+                        padding:"8px 10px", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.09)",
+                        borderRadius:8, cursor:"pointer", textAlign:"left", marginBottom:3 }}
+                      onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.14)"}
+                      onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.06)"}>
+                      <div>
+                        <div style={{ fontSize:12.5, fontWeight:600, color:"#fff" }}>{u.nama}</div>
+                        <div style={{ fontSize:10.5, color:"rgba(255,255,255,.5)", fontFamily:"monospace" }}>
+                          {u.username} · {u.password}
+                        </div>
+                      </div>
+                      {u.uker && <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", flexShrink:0, marginLeft:8 }}>
+                        {UKER.find(uk=>uk.kode===u.uker)?.nama||""}
+                      </div>}
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        <div style={{ fontSize:11, color:C.gray, marginTop:16, textAlign:"center" }}>Mode demo — tanpa password. Hak akses & data menyesuaikan role.</div>
+
       </div>
     </div>
   );
 }
 
 export default function App() {
+  const [currentUser, setCurrentUser] = useState(null);
   const [role, setRole] = useState(null);
   const [page, setPage] = useState("dashboard");
   const [filters, setFilters] = useState({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" });
   const [profileOpen, setProfileOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [uploadedData, setUploadedData] = useState(null);
+  const [localUsers, setLocalUsers] = useState(USERS);
 
   const handleUploadFile = async (file) => {
     if (!file) return;
@@ -1793,28 +2125,31 @@ export default function App() {
   const list = useMemo(()=>{
     if (!perms) return [];
     return sourceDebitur.filter(d=>{
-      if (perms.scope==="ao" && d.aoId!==DEMO_AO_ID) return false;
+      if (perms.scope==="ao"         && currentUser?.aoId && d.aoId!==currentUser.aoId) return false;
       if (perms.scope==="bermasalah" && d.tier==="rendah") return false;
-      if (perms.scope==="uker" && d.uker!==DEMO_KEPALA_UKER_KODE) return false;
+      if (perms.scope==="uker"       && currentUser?.uker && d.uker!==currentUser.uker) return false;
       return (filters.uker==="semua" || d.uker===filters.uker)
         && (filters.ao==="semua" || d.aoId===filters.ao)
         && (filters.segment==="semua" || d.segment===filters.segment);
     });
-  }, [filters, perms, sourceDebitur]);
+  }, [filters, perms, sourceDebitur, currentUser]);
   const m = useMemo(()=>buildModel(list, filters.periode), [list, filters.periode]);
 
-  if (!perms) return <Login onLogin={(id)=>{
-    setRole(id); setPage("dashboard"); setProfileOpen(false);
-    if (id==="ao") setFilters({ uker:DEMO_AO.uker, ao:DEMO_AO_ID, segment:"semua", periode:"Mei 2026" });
-    else if (id==="kepalaUnit") setFilters({ uker:DEMO_KEPALA_UKER_KODE, ao:"semua", segment:"semua", periode:"Mei 2026" });
-    else setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" });
-  }} />;
+  const handleLogin = (user) => {
+    setCurrentUser(user); setRole(user.role); setPage("dashboard"); setProfileOpen(false);
+    if (user.role==="ao")         setFilters({ uker:user.uker||"semua", ao:user.aoId||"semua", segment:"semua", periode:"Mei 2026" });
+    else if (user.uker)           setFilters({ uker:user.uker, ao:"semua", segment:"semua", periode:"Mei 2026" });
+    else                          setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" });
+  };
+  const handleLogout = () => { setCurrentUser(null); setRole(null); setPage("dashboard"); setProfileOpen(false); setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" }); };
+
+  if (!perms) return <Login onLogin={handleLogin} localUsers={localUsers} />;
 
   const menus = MENU.filter(x=>perms.menus.includes(x.id));
   const safePage = perms.menus.includes(page) ? page : "dashboard";
   const cur = MENU.find(x=>x.id===safePage);
   const sub = cur.sub.replace("__DATE__", m.P.date);
-  const DashboardComp = role==="mb" ? DashboardMB : role==="ao" ? DashboardAO : role==="collection" ? DashboardCollection : role==="kepalaUnit" ? DashboardKepalaUnit : DashboardPinca;
+  const DashboardComp = role==="ao" ? DashboardAO : role==="collection" ? DashboardCollection : role==="kepalaUnit" ? DashboardKepalaUnit : DashboardPinca;
   const pages = {
     dashboard:   <DashboardComp m={m} go={(p)=>perms.menus.includes(p)&&setPage(p)} perms={perms} />,
     portfolio:   <PortfolioStatus m={m} />,
@@ -1825,6 +2160,7 @@ export default function App() {
     kinerjaAO:   <KinerjaAO m={m} />,
     kinerjaUnit: <KinerjaUnit m={m} />,
     laporan:     <Laporan m={m} list={list} perms={perms} />,
+    manajemen:   <ManajemenUser localUsers={localUsers} setLocalUsers={setLocalUsers} />,
     pengaturan:  <Pengaturan perms={perms} onUpload={handleUploadFile} uploadedData={uploadedData} onReset={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Mei 2026"})); }} />,
   };
   const aktifFilter = perms.scope==="all" && (filters.uker!=="semua" || filters.segment!=="semua" || filters.ao!=="semua");
@@ -1838,9 +2174,9 @@ export default function App() {
             <div style={{ fontSize:18, fontWeight:800, color:"#1F2937", letterSpacing:.3, whiteSpace:"nowrap" }}>{cur.title}</div>
             <div style={{ fontSize:12, color:C.gray, marginTop:2 }}>
               {sub}
-              {perms.scope==="ao" && <span style={{ color:C.navy, fontWeight:600 }}> · Portofolio {perms.nama} ({fNum(list.length)} debitur)</span>}
+              {perms.scope==="ao" && <span style={{ color:C.navy, fontWeight:600 }}> · Portofolio {currentUser?.nama||perms.nama} ({fNum(list.length)} debitur)</span>}
               {perms.scope==="bermasalah" && <span style={{ color:C.red, fontWeight:600 }}> · Debitur bermasalah ({fNum(list.length)})</span>}
-              {perms.scope==="uker" && <span style={{ color:C.kpiTeal, fontWeight:600 }}> · Unit {DEMO_KEPALA_UNIT?.nama} ({fNum(list.length)} debitur)</span>}
+              {perms.scope==="uker" && <span style={{ color:C.kpiTeal, fontWeight:600 }}> · Unit {UKER.find(uk=>uk.kode===currentUser?.uker)?.nama||""} ({fNum(list.length)} debitur)</span>}
               {aktifFilter && <span style={{ color:C.navy, fontWeight:600 }}> · Filter aktif: {fNum(list.length)} debitur</span>}
             </div>
           </div>
@@ -1866,7 +2202,7 @@ export default function App() {
               <div onClick={()=>setProfileOpen(o=>!o)} style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer" }}>
                 <div style={{ width:32, height:32, borderRadius:"50%", background:perms.color, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={perms.icon} size={20} /></div>
                 <div>
-                  <div style={{ fontSize:12.5, fontWeight:700, color:"#1F2937" }}>{perms.nama}</div>
+                  <div style={{ fontSize:12.5, fontWeight:700, color:"#1F2937" }}>{currentUser?.nama||perms.nama}</div>
                   <div style={{ fontSize:11, color:C.gray }}>{perms.title}</div>
                 </div>
                 <Ic n="chevronD" size={14} style={{ color:C.gray }} />
@@ -1874,20 +2210,19 @@ export default function App() {
               {profileOpen && (
                 <div style={{ position:"absolute", right:0, top:46, width:248, background:C.white, border:`1px solid ${C.border}`, borderRadius:10, boxShadow:"0 10px 30px rgba(16,24,40,.15)", zIndex:20, overflow:"hidden" }}>
                   <div style={{ padding:"12px 14px", borderBottom:`1px solid ${C.border}` }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{perms.nama}</div>
-                    <div style={{ fontSize:11.5, color:perms.color, fontWeight:600 }}>{perms.title}</div>
-                    <div style={{ fontSize:11, color:C.gray, marginTop:4 }}>{perms.akses}</div>
+                    <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{currentUser?.nama||perms.nama}</div>
+                    <div style={{ fontSize:11.5, color:perms.color, fontWeight:600, marginTop:1 }}>{perms.title}</div>
+                    {currentUser?.username && <div style={{ fontSize:11, color:C.gray, fontFamily:"monospace", marginTop:3 }}>@{currentUser.username}</div>}
+                    {currentUser?.pn && <div style={{ fontSize:11, color:C.gray, marginTop:1 }}>PN {currentUser.pn}</div>}
+                    {currentUser?.uker && <div style={{ fontSize:11, color:C.gray, marginTop:1 }}>{UKER.find(uk=>uk.kode===currentUser.uker)?.nama||currentUser.uker}</div>}
                   </div>
-                  <div style={{ padding:8 }}>
-                    <div style={{ fontSize:10.5, color:C.gray, padding:"2px 6px 6px" }}>GANTI AKUN DEMO</div>
-                    {Object.values(ROLES).map(r=>(
-                      <div key={r.id} onClick={()=>{ setRole(r.id); setProfileOpen(false); setPage("dashboard"); if(r.id==="ao") setFilters({uker:DEMO_AO.uker,ao:DEMO_AO_ID,segment:"semua",periode:filters.periode}); else if(r.id==="kepalaUnit") setFilters({uker:DEMO_KEPALA_UKER_KODE,ao:"semua",segment:"semua",periode:filters.periode}); else setFilters(f=>({...f,uker:"semua",ao:"semua",segment:"semua"})); }}
-                        style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 6px", borderRadius:7, cursor:"pointer", background: r.id===role?C.grayLt:"transparent" }}>
-                        <div style={{ width:24, height:24, borderRadius:"50%", background:r.color, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={r.icon} size={14} /></div>
-                        <span style={{ fontSize:12.5, color:C.textMd, fontWeight: r.id===role?700:500 }}>{r.title}</span>
-                      </div>
-                    ))}
-                    <div onClick={()=>{ setRole(null); setProfileOpen(false); setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" }); }} style={{ marginTop:6, padding:"8px", textAlign:"center", borderTop:`1px solid ${C.border}`, color:C.red, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Keluar</div>
+                  <div style={{ padding:"6px 8px" }}>
+                    <div onClick={handleLogout}
+                      style={{ padding:"9px 12px", textAlign:"center", color:C.red, fontSize:13, fontWeight:700, cursor:"pointer", borderRadius:7 }}
+                      onMouseEnter={e=>e.currentTarget.style.background=C.redLt}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      Keluar
+                    </div>
                   </div>
                 </div>
               )}
