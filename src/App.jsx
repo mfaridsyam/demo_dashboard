@@ -144,17 +144,17 @@ const ROLES = {
   pinca:      { id:"pinca",      nama:"Hery Santoso",   title:"Pimpinan Cabang",        icon:"userCircle", color:C.kpiBlue,
     desc:"Monitoring seluruh cabang & unit kerja",      akses:"Lihat semua data · read-only (mode pantau)",
     scope:"all",         editAction:false, editData:false, exportReport:true,
-    menus:ALL_MENUS.filter(m=>m!=="pengaturan") },
-  mb:         { id:"mb",         nama:"Dewi Anggraini", title:"Manajer Bisnis",          icon:"userPerf",   color:C.kpiPurple,
+    menus:ALL_MENUS.filter(m=>m!=="pengaturan"&&m!=="manajemen") },
+  mb:         { id:"mb",         nama:"A. Achmad Rizal", title:"Manajer Bisnis",         icon:"userPerf",   color:C.kpiPurple,
     desc:"Pengendalian portofolio cabang",              akses:"Kelola action plan, simulasi CKPN, upload data & pengaturan",
-    scope:"all",         editAction:true,  editData:true,  exportReport:true,  menus:ALL_MENUS },
-  kepalaUnit: { id:"kepalaUnit", nama:"Ahmad Fauzi",    title:"Kepala Unit Polewali",    icon:"building",   color:C.kpiTeal,
+    scope:"all",         editAction:true,  editData:true,  exportReport:true,  menus:ALL_MENUS.filter(m=>m!=="manajemen") },
+  kepalaUnit: { id:"kepalaUnit", nama:"Syamsuddin",      title:"Kepala Unit",             icon:"building",   color:C.kpiTeal,
     desc:`Pengelolaan unit kerja · ${DEMO_KEPALA_UNIT?.nama||""}`, akses:"Hanya data unit sendiri · input action plan",
     scope:"uker",        editAction:true,  editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
   ao:         { id:"ao",         nama:DEMO_AO?.nama||"Mantri", title:"Account Officer / Mantri", icon:"userPerf", color:C.kpiTeal,
     desc:`Tindak lanjut debitur · ${DEMO_AO_UKER?.nama||""}`,    akses:"Hanya portofolio sendiri · input action plan",
     scope:"ao",          editAction:true,  editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
-  collection: { id:"collection", nama:"Rudi Hartono",   title:"Collection Officer",      icon:"userPerf",   color:C.kpiAmber,
+  collection: { id:"collection", nama:"Yulmand Raymon Hallatu", title:"Collection Officer", icon:"userPerf",  color:C.kpiAmber,
     desc:"Penagihan debitur bermasalah",                akses:"Debitur Kol 2-5 · update penagihan",
     scope:"bermasalah",  editAction:true,  editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
   admin:      { id:"admin",      nama:"Admin IT",       title:"Administrator IT",        icon:"gear",       color:C.gray,
@@ -162,30 +162,17 @@ const ROLES = {
     scope:"all",         editAction:false, editData:false, exportReport:false, menus:["dashboard","manajemen","pengaturan"] },
 };
 
-const _aoU = (ao, idx) => {
-  const base = ao.nama.toLowerCase().replace(/\s+/g,".");
-  return `${base}.${String(idx).padStart(2,"0")}`;
-};
+const DEMO_KU_UKER  = "5032";
+const DEMO_AO_UKER2 = "5031";
+const DEMO_AO_OBJ   = AO.find(a=>a.uker===DEMO_AO_UKER2) || AO[0];
 const USERS = [
-  // pn = identitas unik pegawai, dipakai sistem untuk link ke data (LW321 pakai pn sebagai pembeda jika nama sama)
-  // Admin IT — kelola user & upload data, tidak akses data kredit
-  { id:"u-it-1",   pn:"90188658", nama:"Muhammad Farid Syam", username:"farid.syam",      password:"demo123", role:"admin",      uker:null,         aoId:null,     aktif:true },
-  { id:"u-it-2",   pn:"90188700", nama:"Deni Suhardiman",    username:"deni.suhardiman", password:"demo123", role:"admin",      uker:null,         aoId:null,     aktif:true },
-  { id:"u-pinca",  pn:"00010001", nama:"Hery Santoso",   username:"hery.santoso",   password:"demo123", role:"pinca",      uker:null,         aoId:null,     aktif:true },
-  { id:"u-mb",     pn:"00010002", nama:"Dewi Anggraini", username:"dewi.anggraini", password:"demo123", role:"mb",         uker:null,         aoId:null,     aktif:true },
-  // Kepala Unit
-  { id:"u-ku-0",   pn:"00025901", nama:"Ahmad Fauzi",    username:"ahmad.fauzi",    password:"demo123", role:"kepalaUnit", uker:UKER[0].kode, aoId:null,     aktif:true },
-  { id:"u-ku-1",   pn:"00064501", nama:"Bachtiar Halim", username:"bachtiar.halim", password:"demo123", role:"kepalaUnit", uker:UKER[1].kode, aoId:null,     aktif:true },
-  { id:"u-ku-2",   pn:"00204201", nama:"Sri Wahyuni",    username:"sri.wahyuni",    password:"demo123", role:"kepalaUnit", uker:UKER[2].kode, aoId:null,     aktif:true },
-  // AO/Mantri — pn diambil dari data AO (sama dengan PN di LW321), aoId untuk filter data binaan
-  { id:"u-ao-0",   pn:AO[0]?.pn, nama:AO[0]?.nama||"Mantri 1", username:_aoU(AO[0]||{nama:"mantri 1"},0), password:"demo123", role:"ao", uker:AO[0]?.uker, aoId:AO[0]?.id, aktif:true },
-  { id:"u-ao-1",   pn:AO[1]?.pn, nama:AO[1]?.nama||"Mantri 2", username:_aoU(AO[1]||{nama:"mantri 2"},1), password:"demo123", role:"ao", uker:AO[1]?.uker, aoId:AO[1]?.id, aktif:true },
-  { id:"u-ao-2",   pn:AO[2]?.pn, nama:AO[2]?.nama||"Mantri 3", username:_aoU(AO[2]||{nama:"mantri 3"},2), password:"demo123", role:"ao", uker:AO[2]?.uker, aoId:AO[2]?.id, aktif:true },
-  { id:"u-ao-3",   pn:AO[3]?.pn, nama:AO[3]?.nama||"Mantri 4", username:_aoU(AO[3]||{nama:"mantri 4"},3), password:"demo123", role:"ao", uker:AO[3]?.uker, aoId:AO[3]?.id, aktif:true },
-  { id:"u-ao-4",   pn:AO[4]?.pn, nama:AO[4]?.nama||"Mantri 5", username:_aoU(AO[4]||{nama:"mantri 5"},4), password:"demo123", role:"ao", uker:AO[4]?.uker, aoId:AO[4]?.id, aktif:true },
-  // Collection Officer
-  { id:"u-col-0",  pn:"00025910", nama:"Rudi Hartono",   username:"rudi.hartono",   password:"demo123", role:"collection", uker:UKER[0].kode, aoId:null,     aktif:true },
-  { id:"u-col-1",  pn:"00064510", nama:"Lina Marlina",   username:"lina.marlina",   password:"demo123", role:"collection", uker:UKER[1].kode, aoId:null,     aktif:true },
+  { id:"u-it-1",  pn:"90188658", nama:"Muhammad Farid Syam",   username:"farid.syam",       password:"demo123", role:"admin",      uker:null,          aoId:null,          aktif:true },
+  { id:"u-it-2",  pn:"387188",   nama:"Deni Suhardiman",       username:"deni.suhardiman",  password:"demo123", role:"admin",      uker:null,          aoId:null,          aktif:true },
+  { id:"u-pinca", pn:"56848",    nama:"Hery Santoso",          username:"hery.santoso",     password:"demo123", role:"pinca",      uker:null,          aoId:null,          aktif:true },
+  { id:"u-mb",    pn:"79028",    nama:"A. Achmad Rizal",       username:"achmad.rizal",     password:"demo123", role:"mb",         uker:null,          aoId:null,          aktif:true },
+  { id:"u-ku",    pn:"176363",   nama:"Syamsuddin",            username:"syamsuddin",       password:"demo123", role:"kepalaUnit", uker:DEMO_KU_UKER,  aoId:null,          aktif:true },
+  { id:"u-ao",    pn:"406550",   nama:"Agung Arruan Bone",     username:"agung.bone",       password:"demo123", role:"ao",         uker:DEMO_AO_UKER2, aoId:DEMO_AO_OBJ?.id, aktif:true },
+  { id:"u-col",   pn:"291283",   nama:"Yulmand Raymon Hallatu",username:"yulmand.hallatu",  password:"demo123", role:"collection", uker:"0259",        aoId:null,          aktif:true },
 ];
 
 const PERIODE = {
@@ -2217,6 +2204,28 @@ export default function App() {
                     {currentUser?.uker && <div style={{ fontSize:11, color:C.gray, marginTop:1 }}>{UKER.find(uk=>uk.kode===currentUser.uker)?.nama||currentUser.uker}</div>}
                   </div>
                   <div style={{ padding:"6px 8px" }}>
+                    <div style={{ fontSize:10, fontWeight:700, color:C.gray, letterSpacing:.5, textTransform:"uppercase", padding:"4px 6px 6px" }}>Ganti Akun Demo</div>
+                    {(()=>{
+                      const RLABEL = { admin:"Admin IT", pinca:"Pimpinan Cabang", mb:"Manajer Bisnis", kepalaUnit:"Kepala Unit", ao:"AO / Mantri", collection:"Collection" };
+                      const RCOLOR = { admin:C.gray, pinca:C.kpiBlue, mb:C.kpiPurple, kepalaUnit:C.kpiTeal, ao:C.kpiTeal, collection:C.kpiAmber };
+                      return localUsers.filter(u=>u.aktif).map(u=>(
+                        <div key={u.id} onClick={()=>{ handleLogin(u); setProfileOpen(false); }}
+                          style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 8px", borderRadius:7, cursor:"pointer",
+                            background: u.id===currentUser?.id ? C.grayLt : "transparent" }}
+                          onMouseEnter={e=>e.currentTarget.style.background=C.grayLt}
+                          onMouseLeave={e=>e.currentTarget.style.background=u.id===currentUser?.id?C.grayLt:"transparent"}>
+                          <div style={{ width:26, height:26, borderRadius:"50%", background:RCOLOR[u.role]||C.gray, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:11, fontWeight:700 }}>
+                            {u.nama.charAt(0)}
+                          </div>
+                          <div style={{ minWidth:0 }}>
+                            <div style={{ fontSize:12, fontWeight:600, color:C.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{u.nama}</div>
+                            <div style={{ fontSize:10.5, color:RCOLOR[u.role]||C.gray, fontWeight:500 }}>{RLABEL[u.role]||u.role}</div>
+                          </div>
+                          {u.id===currentUser?.id && <div style={{ marginLeft:"auto", fontSize:10, color:C.gray, flexShrink:0 }}>●</div>}
+                        </div>
+                      ));
+                    })()}
+                    <div style={{ borderTop:`1px solid ${C.border}`, margin:"4px 0" }} />
                     <div onClick={handleLogout}
                       style={{ padding:"9px 12px", textAlign:"center", color:C.red, fontSize:13, fontWeight:700, cursor:"pointer", borderRadius:7 }}
                       onMouseEnter={e=>e.currentTarget.style.background=C.redLt}
