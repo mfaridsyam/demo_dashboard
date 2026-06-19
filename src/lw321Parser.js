@@ -149,7 +149,8 @@ export function parseLW321(file) {
           const segment = mapSegment(plafonIDR);
           const balanceJt = balanceIDR / 1_000_000;
 
-          const descSegmen = String(row[I.descSegmen] || '').trim();
+          const descSegmenRaw = String(row[I.descSegmen] || '').trim();
+          const descSegmen = descSegmenRaw.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 
           const tunggakanPokokIdr = parseFloat(row[I.tunggakan]) || 0;
           const tPokok = tunggakanPokokIdr > 0 ? Math.round(tunggakanPokokIdr / 1_000_000) : Math.round(balanceJt * (dpd / 360));

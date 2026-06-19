@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { parseLW321 } from "./lw321Parser.js";
+import * as XLSX from 'xlsx';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, PieChart, Pie, Cell, Sector, LabelList, BarChart, Bar, Legend
@@ -139,7 +140,7 @@ const DEMO_AO_UKER = UKER.find(u=>u.kode===DEMO_AO.uker);
 const DEMO_KEPALA_UKER_KODE = "5037";
 const DEMO_KEPALA_UNIT = UKER.find(u=>u.kode===DEMO_KEPALA_UKER_KODE);
 
-const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","laporan","pengaturan"];
+const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","pengaturan"];
 const ROLES = {
   pinca: { id:"pinca", nama:"Hery Susanto", title:"Pimpinan Cabang", icon:"userCircle", color:C.kpiBlue,
     desc:"Monitoring seluruh cabang & unit kerja", akses:"Lihat semua data · read-only (mode pantau)",
@@ -492,15 +493,17 @@ function DashboardPinca({ m, go }) {
   const up = (x)=>(x>=0?"▲ ":"▼ ")+fPct(Math.abs(x),2)+" vs bln lalu";
 
   const KPI = [
+    // Baris 1: bisnis & risiko utama
     { icon:"wallet",     color:C.kpiBlue,   label:"Total Outstanding",       prefix:"Rp", value:fMil(m.totalOsJt).replace("Rp ",""), sub:up(m.deltas.os), subColor:C.green },
-    { icon:"users",      color:C.kpiTeal,   label:"Total Debitur",                        value:fNum(m.totalDeb),                    sub:up(m.deltas.deb), subColor:C.green },
-    { icon:"thumb",      color:C.kpiGreen,  label:"Debitur Lancar",                        value:fNum(m.tier.rendah),                 sub:fPct(m.ringkasanEW[2].pct)+" dari total", subColor:C.navy },
-    { icon:"infoCircle", color:C.kpiAmber,  label:"Debitur Risiko (2A-2B)",                value:fNum(m.tier.sedang),                 sub:fPct(m.ringkasanEW[1].pct)+" dari total", subColor:C.amber },
-    { icon:"warning",    color:C.kpiRed,    label:"Debitur Bermasalah (3-5)",              value:fNum(m.tier.tinggi),                 sub:fPct(m.ringkasanEW[0].pct)+" dari total", subColor:C.red },
-    { icon:"shield",     color:C.kpiPurple, label:"CKPN Existing",           prefix:"Rp", value:fMil(m.ckpnExisting).replace("Rp ",""), sub:up(m.deltas.ckpn), subColor:C.red },
-    { icon:"wallet",     color:C.kpiRed,    label:"Total Tunggakan",         prefix:"Rp", value:fMil(m.totalTunggakanAll||0).replace("Rp ",""), sub:"Estimasi seluruh tunggakan", subColor:C.red },
     { icon:"thumb",      color:C.kpiGreen,  label:"Realisasi Baru Bln Ini",  prefix:"Rp", value:fMil(m.realisasiJt||0).replace("Rp ",""), sub:"Pinjaman baru bulan ini", subColor:C.green },
     { icon:"download",   color:C.kpiTeal,   label:"Nett Disbursed",          prefix:"Rp", value:fMil(m.nettDisbursed||0).replace("Rp ",""), sub:"Realisasi dikurangi pelunasan", subColor:C.navy },
+    { icon:"shield",     color:C.kpiPurple, label:"CKPN Existing",           prefix:"Rp", value:fMil(m.ckpnExisting).replace("Rp ",""), sub:up(m.deltas.ckpn), subColor:C.red },
+    { icon:"warning",    color:C.kpiRed,    label:"Debitur Bermasalah (3-5)",              value:fNum(m.tier.tinggi),                 sub:fPct(m.ringkasanEW[0].pct)+" dari total", subColor:C.red },
+    { icon:"wallet",     color:C.kpiRed,    label:"Total Tunggakan",         prefix:"Rp", value:fMil(m.totalTunggakanAll||0).replace("Rp ",""), sub:"Estimasi seluruh tunggakan", subColor:C.red },
+    // Baris 2: statistik debitur
+    { icon:"users",      color:C.kpiTeal,   label:"Total Debitur",                        value:fNum(m.totalDeb),                    sub:up(m.deltas.deb), subColor:C.green },
+    { icon:"infoCircle", color:C.kpiAmber,  label:"Debitur Risiko (2A-2B)",                value:fNum(m.tier.sedang),                 sub:fPct(m.ringkasanEW[1].pct)+" dari total", subColor:C.amber },
+    { icon:"thumb",      color:C.kpiGreen,  label:"Debitur Lancar",                        value:fNum(m.tier.rendah),                 sub:fPct(m.ringkasanEW[2].pct)+" dari total", subColor:C.navy },
   ];
 
   return (
@@ -1371,14 +1374,150 @@ function KinerjaUnit({ m }) {
   );
 }
 
-function Laporan({ m, perms }) {
+function downloadReport(type, m, list) {
+  const wb = XLSX.utils.book_new();
+  const tgl = m.P.date;
+  const fn = tgl.replace(/\s/g,"_");
+  const safe = (n) => n > 900719925 ? 0 : (n || 0);
+  const addSheet = (name, aoa, widths) => {
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    if (widths) ws["!cols"] = widths.map(w=>({ wch:w }));
+    XLSX.utils.book_append_sheet(wb, ws, name.substring(0,31));
+  };
+
+  if (type === "portofolio") {
+    addSheet("Ringkasan", [
+      ["LAPORAN PORTOFOLIO KREDIT — BO POLEWALI"],
+      [`Tanggal: ${tgl}`],[],
+      ["INDIKATOR","NILAI","SATUAN"],
+      ["Total Outstanding", +((m.totalOsJt||0)/1000).toFixed(3), "Miliar Rp"],
+      ["Total Debitur", m.totalDeb, "debitur"],
+      ["NPL Ratio", +m.npl.toFixed(2), "%"],
+      ["CKPN Existing", +((m.ckpnExisting||0)/1000).toFixed(3), "Miliar Rp"],
+      ["Realisasi Baru", +((m.realisasiJt||0)/1000).toFixed(3), "Miliar Rp"],
+      ["Nett Disbursed", +((m.nettDisbursed||0)/1000).toFixed(3), "Miliar Rp"],
+      ["Debitur Lancar (Kol 1)", m.tier.rendah, "debitur"],
+      ["Debitur Risiko (Kol 2A-2B)", m.tier.sedang, "debitur"],
+      ["Debitur Bermasalah (Kol 3-5)", m.tier.tinggi, "debitur"],
+      ["Total Tunggakan Est.", +((m.totalTunggakanAll||0)/1000).toFixed(3), "Miliar Rp"],
+    ], [32,16,14]);
+    addSheet("Per Unit Kerja", [
+      [`PORTOFOLIO PER UNIT KERJA — ${tgl}`],[],
+      ["No","Kode","Nama Unit Kerja","Outstanding (Jt)","Jml Debitur","Risiko Tinggi","NPL Ratio (%)","CKPN (Jt)","Recovery (%)"],
+      ...m.perUker.map((u,i)=>[i+1, u.kode, u.nama, Math.round(u.osJt), u.deb, u.tinggi, +u.npl.toFixed(2), Math.round(u.ckpn), u.recovery]),
+      [],[" TOTAL","","",Math.round(m.totalOsJt), m.totalDeb,"",+m.npl.toFixed(2), Math.round(m.ckpnExisting),""],
+    ], [4,8,22,16,12,12,13,12,12]);
+    addSheet("Daftar Debitur", [
+      [`DAFTAR DEBITUR — ${tgl}`],[],
+      ["No","CIF","Nama Debitur","Unit Kerja","Mantri","PN","Segment","Sektor","Outstanding (Jt)","Kolektibilitas","DPD","Skor","Status Risiko"],
+      ...list.map((d,i)=>[i+1, d.cif, d.nama, d.ukerNama, d.ao, d.pn||"", d.segment, d.sektor, Math.round(d.osJt), d.kol, d.dpd, d.skor, risikoLabel[d.tier]||d.tier]),
+    ], [4,12,30,20,25,10,10,12,16,12,6,6,14]);
+    addSheet("Distribusi Kolektibilitas", [
+      [`DISTRIBUSI KOLEKTIBILITAS — ${tgl}`],[],
+      ["Kolektibilitas","Label","Jumlah Debitur","Persentase (%)","Outstanding (Jt)"],
+      ...m.kol.map(k=>[k.kol, k.legend, k.value, +k.pct.toFixed(2), Math.round(k.osJt)]),
+    ], [14,10,16,16,16]);
+    XLSX.writeFile(wb, `Portofolio_Kredit_${fn}.xlsx`);
+  }
+
+  else if (type === "ews") {
+    const tinggiList = [...list].filter(d=>d.tier==="tinggi").sort((a,b)=>b.dpd-a.dpd);
+    const alertCnt = { tinggi:m.alerts.filter(a=>a.level==="tinggi").length, sedang:m.alerts.filter(a=>a.level==="sedang").length, rendah:m.alerts.filter(a=>a.level==="rendah").length };
+    addSheet("Ringkasan EWS", [
+      ["LAPORAN EARLY WARNING SYSTEM — BO POLEWALI"],
+      [`Tanggal: ${tgl}`],[],
+      ["Kategori Risiko","Jumlah Debitur","Persentase (%)","Alert Aktif"],
+      ["Risiko Tinggi (Kol 3-5)", m.tier.tinggi, +m.ringkasanEW[0].pct.toFixed(2), alertCnt.tinggi],
+      ["Risiko Sedang (Kol 2A-2B)", m.tier.sedang, +m.ringkasanEW[1].pct.toFixed(2), alertCnt.sedang],
+      ["Risiko Rendah (Kol 1)", m.tier.rendah, +m.ringkasanEW[2].pct.toFixed(2), alertCnt.rendah],
+      ["TOTAL", m.totalDeb, 100, m.alerts.length],
+    ], [28,16,14,12]);
+    addSheet("Debitur Risiko Tinggi", [
+      [`DEBITUR RISIKO TINGGI — ${tgl}`],[],
+      ["No","CIF","Nama Debitur","Unit Kerja","Mantri","PN","Outstanding (Jt)","DPD","Kolektibilitas","Skor","Tunggakan Est. (Jt)"],
+      ...tinggiList.map((d,i)=>[i+1, d.cif, d.nama, d.ukerNama, d.ao, d.pn||"", Math.round(d.osJt), d.dpd, d.kol, d.skor, Math.round(d.tunggakanTotal||0)]),
+    ], [4,12,30,20,25,10,16,6,12,6,18]);
+    addSheet("EWS Per Unit Kerja", [
+      [`EWS PER UNIT KERJA — ${tgl}`],[],
+      ["No","Unit Kerja","Total Debitur","Risiko Tinggi","Risiko Sedang","Risiko Rendah","NPL Ratio (%)"],
+      ...m.perUker.map((u,i)=>{
+        const it = list.filter(d=>d.uker===u.kode);
+        return [i+1, u.nama, u.deb, u.tinggi, it.filter(d=>d.tier==="sedang").length, it.filter(d=>d.tier==="rendah").length, +u.npl.toFixed(2)];
+      }),
+    ], [4,22,14,12,14,14,13]);
+    addSheet("Daftar Alert", [
+      [`DAFTAR ALERT — ${tgl}`],[],
+      ["No","Level","Deskripsi Alert","Waktu"],
+      ...m.alerts.map((a,i)=>[i+1, a.level.toUpperCase(), a.text, a.time]),
+    ], [4,10,75,20]);
+    XLSX.writeFile(wb, `EarlyWarning_${fn}.xlsx`);
+  }
+
+  else if (type === "action") {
+    const selesai = m.actionPlans.filter(p=>p.status==="selesai");
+    const inProg = m.actionPlans.filter(p=>p.status==="in_progress");
+    addSheet("Ringkasan", [
+      ["LAPORAN ACTION PLAN — BO POLEWALI"],
+      [`Tanggal: ${tgl}`],[],
+      ["Indikator","Nilai"],
+      ["Total Action Plan", m.actionPlans.length],
+      ["Selesai", selesai.length],
+      ["In Progress", inProg.length],
+      ["Completion Rate (%)", m.actionPlans.length ? +((selesai.length/m.actionPlans.length)*100).toFixed(1) : 0],
+    ], [30,14]);
+    addSheet("Daftar Action Plan", [
+      [`DAFTAR ACTION PLAN — ${tgl}`],[],
+      ["No","Tanggal Input","Nama Debitur","PIC (PN – Mantri)","Kolektibilitas","Jenis Tindakan","Target","Status","Hasil / Catatan"],
+      ...m.actionPlans.map((p,i)=>[i+1, p.tgl, p.nama, p.ao, p.kol, p.jenis, p.target, p.status==="selesai"?"Selesai":"In Progress", p.hasil]),
+    ], [4,13,30,28,13,22,12,13,35]);
+    addSheet("Action Plan Selesai", [
+      [`ACTION PLAN SELESAI — ${tgl}`],[],
+      ["No","Tanggal","Nama Debitur","PIC","Jenis","Hasil"],
+      ...selesai.map((p,i)=>[i+1, p.tgl, p.nama, p.ao, p.jenis, p.hasil]),
+    ], [4,13,30,28,22,35]);
+    XLSX.writeFile(wb, `ActionPlan_${fn}.xlsx`);
+  }
+
+  else if (type === "ckpn") {
+    const covPct = m.totalOsJt ? +((m.ckpnExisting/m.totalOsJt)*100).toFixed(2) : 0;
+    addSheet("Ringkasan CKPN", [
+      ["LAPORAN SIMULASI CKPN — BO POLEWALI"],
+      [`Tanggal: ${tgl}`],[],
+      ["Indikator","Nilai (Jt)","Keterangan"],
+      ["CKPN Existing", Math.round(m.ckpnExisting), "Berdasarkan kolektibilitas saat ini"],
+      ["CKPN Setelah Action Plan", Math.round(m.ckpnAfter), "Estimasi jika action plan berhasil"],
+      ["Potensi Penghematan", Math.round(m.ckpnSaving), `${m.savingPct.toFixed(1)}% dari CKPN Existing`],
+      ["Coverage Rate CKPN (%)", covPct, "CKPN Existing / Total Outstanding × 100"],
+      ["Total Outstanding", Math.round(m.totalOsJt), "Basis perhitungan"],
+    ], [30,14,38]);
+    addSheet("CKPN Per Unit Kerja", [
+      [`CKPN PER UNIT KERJA — ${tgl}`],[],
+      ["No","Unit Kerja","Outstanding (Jt)","CKPN Existing (Jt)","Coverage (%)","Recovery Rate (%)"],
+      ...m.perUker.map((u,i)=>[i+1, u.nama, Math.round(u.osJt), Math.round(u.ckpn), u.osJt ? +((u.ckpn/u.osJt)*100).toFixed(2) : 0, u.recovery]),
+      [],[" TOTAL","",Math.round(m.totalOsJt), Math.round(m.ckpnExisting), covPct,""],
+    ], [4,22,16,18,13,16]);
+    addSheet("CKPN Per Kolektibilitas", [
+      [`CKPN PER KOLEKTIBILITAS — ${tgl}`],[],
+      ["Kol","Label","Coverage Rate","Jml Debitur","Outstanding (Jt)","CKPN (Jt)"],
+      ...m.kol.map(k=>{ const cov={1:0.01,"2A":0.05,"2B":0.15,3:0.5,4:0.75,5:1.0}[k.kol]||0; return [k.kol, k.legend, `${(cov*100).toFixed(0)}%`, k.value, Math.round(k.osJt), Math.round(k.osJt*cov)]; }),
+    ], [6,10,13,14,16,14]);
+    addSheet("Top Kontributor CKPN", [
+      [`TOP KONTRIBUTOR CKPN — ${tgl}`],[],
+      ["No","Nama Debitur","Outstanding (Jt)","Kol","CKPN Existing (Jt)","Pot. Saving (Jt)","% Saving"],
+      ...m.ckpnDebitur.map((d,i)=>[i+1, d.nama, Math.round(d.osJt), d.kol, Math.round(d.ckpn), Math.round(d.saving), +d.pct.toFixed(1)]),
+    ], [4,30,16,6,18,16,10]);
+    XLSX.writeFile(wb, `SimulasiCKPN_${fn}.xlsx`);
+  }
+}
+
+function Laporan({ m, list, perms }) {
   const w = useWindowWidth();
   const canDl = perms?.exportReport;
   const reports = [
-    { nama:"Laporan Portofolio Kredit", desc:"Outstanding, debitur, kolektibilitas per unit kerja" },
-    { nama:"Laporan Early Warning System", desc:"Daftar alert & risk scoring debitur" },
-    { nama:"Laporan Action Plan", desc:"Rekap tindak lanjut & progres penyelesaian" },
-    { nama:"Laporan Simulasi CKPN", desc:"CKPN existing, potensial & penghematan" },
+    { type:"portofolio", nama:"Laporan Portofolio Kredit",   desc:"Outstanding, debitur, kolektibilitas per unit kerja", sheets:"4 sheet: Ringkasan · Per Unit Kerja · Daftar Debitur · Distribusi Kol" },
+    { type:"ews",        nama:"Laporan Early Warning System", desc:"Daftar alert & risk scoring debitur",                sheets:"4 sheet: Ringkasan EWS · Debitur Risiko Tinggi · EWS Per Unit · Daftar Alert" },
+    { type:"action",     nama:"Laporan Action Plan",          desc:"Rekap tindak lanjut & progres penyelesaian",         sheets:"3 sheet: Ringkasan · Daftar Action Plan · Action Selesai" },
+    { type:"ckpn",       nama:"Laporan Simulasi CKPN",        desc:"CKPN existing, potensial & penghematan",             sheets:"4 sheet: Ringkasan · Per Unit Kerja · Per Kolektibilitas · Top Kontributor" },
   ];
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
@@ -1389,8 +1528,9 @@ function Laporan({ m, perms }) {
             <div style={{ flex:1 }}>
               <div style={{ fontSize:13.5, fontWeight:600, color:C.text }}>{r.nama}</div>
               <div style={{ fontSize:12, color:C.gray }}>{r.desc} · per {m.P.date}</div>
+              <div style={{ fontSize:10.5, color:C.kpiTeal, marginTop:2 }}>{r.sheets}</div>
             </div>
-            <button disabled={!canDl} title={canDl?"":"Role Anda tidak memiliki akses unduh"} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", background:C.navy, color:C.white, border:"none", borderRadius:7, cursor:canDl?"pointer":"not-allowed", fontSize:12.5, fontWeight:500, opacity:canDl?1:.45 }}><Ic n="download" size={15} /> Unduh</button>
+            <button onClick={()=>canDl&&downloadReport(r.type, m, list||[])} disabled={!canDl} title={canDl?"Unduh Excel (.xlsx)":"Role Anda tidak memiliki akses unduh"} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", background:C.navy, color:C.white, border:"none", borderRadius:7, cursor:canDl?"pointer":"not-allowed", fontSize:12.5, fontWeight:500, opacity:canDl?1:.45, flexShrink:0 }}><Ic n="download" size={15} /> Unduh</button>
           </div>
         ))}
       </div>
@@ -1559,7 +1699,6 @@ const MENU = [
   { id:"ckpn",        label:"Simulasi CKPN",    icon:"calc",      chevron:true, title:"SIMULASI CKPN", sub:"Estimasi CKPN & potensi penghematan" },
   { id:"kinerjaAO",   label:"Kinerja Mantri",    icon:"userPerf",  chevron:true, title:"KINERJA MANTRI", sub:"Rekap kinerja per Mantri" },
   { id:"kinerjaUnit", label:"Kinerja Unit",     icon:"building",  chevron:true, title:"KINERJA UNIT KERJA", sub:"Rekap kinerja per unit kerja" },
-  { id:"laporan",     label:"Laporan",          icon:"doc",       title:"LAPORAN", sub:"Unduh laporan & riwayat data" },
   { id:"pengaturan",  label:"Pengaturan",       icon:"gear",      chevron:true, title:"PENGATURAN", sub:"Import data, unit kerja & parameter sistem" },
 ];
 
@@ -1685,7 +1824,7 @@ export default function App() {
     ckpn:        <SimulasiCKPN m={m} />,
     kinerjaAO:   <KinerjaAO m={m} />,
     kinerjaUnit: <KinerjaUnit m={m} />,
-    laporan:     <Laporan m={m} perms={perms} />,
+    laporan:     <Laporan m={m} list={list} perms={perms} />,
     pengaturan:  <Pengaturan perms={perms} onUpload={handleUploadFile} uploadedData={uploadedData} onReset={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Mei 2026"})); }} />,
   };
   const aktifFilter = perms.scope==="all" && (filters.uker!=="semua" || filters.segment!=="semua" || filters.ao!=="semua");
