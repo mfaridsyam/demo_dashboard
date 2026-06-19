@@ -93,7 +93,7 @@ const AO = [];
 UKER.forEach(u => {
   const k = u.tipe==="KANCA" ? 5 : u.tipe==="KCP" ? 3 : 2;
   const role = "Mantri";
-  for (let i=0;i<k;i++) AO.push({ id:`${u.kode}-${i}`, nama:`${role} ${pick(NAMA_AO,rng)}`, uker:u.kode });
+  for (let i=0;i<k;i++) AO.push({ id:`${u.kode}-${i}`, nama:`${role} ${pick(NAMA_AO,rng)}`, uker:u.kode, pn:`00${u.kode}${String(i).padStart(2,"0")}` });
 });
 
 const pickKol = () => { const r=rng(); return r<0.83?"1":r<0.88?"2A":r<0.92?"2B":r<0.955?"3":r<0.98?"4":"5"; };
@@ -115,10 +115,18 @@ UKER.forEach(u => {
     const hasAction = tier!=="rendah" && rng() < (tier==="tinggi"?0.7:0.35);
     const resolved = hasAction && rng() < 0.3;
     const ao = pick(aoU,rng);
+    const osJt = osFor(seg);
+    const months = Math.ceil(dpd/30) || 0;
+    const tPokok = Math.round(osJt * (dpd/360));
+    const tBunga = Math.round(tPokok * 0.15/12 * months);
+    const tDenda = Math.round(tPokok * 0.02 * months);
+    const tPenalty = dpd > 90 ? Math.round(tPokok * 0.01) : 0;
     DEBITUR.push({
-      cif:String(cifSeq++), nama:genNama(), ao:ao.nama, aoId:ao.id,
+      cif:String(cifSeq++), nama:genNama(), ao:ao.nama, aoId:ao.id, pn:ao.pn,
       uker:u.kode, ukerNama:u.nama, segment:seg, sektor:pick(SEKTOR,rng),
-      osJt:osFor(seg), kol, dpd, skor:skorFor(dpd), tier, hasAction, resolved,
+      osJt, kol, dpd, skor:skorFor(dpd), tier, hasAction, resolved,
+      tunggakanPokok:tPokok, tunggakanBunga:tBunga, tunggakanDenda:tDenda,
+      tunggakanPenalty:tPenalty, tunggakanTotal:tPokok+tBunga+tDenda+tPenalty,
     });
   }
 });
@@ -128,6 +136,8 @@ DEBITUR.forEach(d => { _aoCount[d.aoId] = (_aoCount[d.aoId]||0)+1; });
 const DEMO_AO_ID = Object.keys(_aoCount).sort((a,b)=>_aoCount[b]-_aoCount[a])[0];
 const DEMO_AO = AO.find(a=>a.id===DEMO_AO_ID);
 const DEMO_AO_UKER = UKER.find(u=>u.kode===DEMO_AO.uker);
+const DEMO_KEPALA_UKER_KODE = "5037";
+const DEMO_KEPALA_UNIT = UKER.find(u=>u.kode===DEMO_KEPALA_UKER_KODE);
 
 const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","laporan","pengaturan"];
 const ROLES = {
@@ -143,6 +153,9 @@ const ROLES = {
   collection: { id:"collection", nama:"Rudi Hartono", title:"Collection Officer", icon:"userPerf", color:C.kpiAmber,
     desc:"Penagihan debitur bermasalah", akses:"Debitur Kol 2-5 · update penagihan",
     scope:"bermasalah", editAction:true, editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
+  kepalaUnit: { id:"kepalaUnit", nama:"Ahmad Fauzi", title:"Kepala Unit Polewali", icon:"building", color:C.kpiTeal,
+    desc:`Pengelolaan unit kerja · ${DEMO_KEPALA_UNIT?.nama||""}`, akses:"Hanya data unit sendiri · input action plan",
+    scope:"uker", editAction:true, editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
 };
 
 const PERIODE = {
@@ -189,6 +202,7 @@ function buildModel(list, periode) {
   const ckpnAfter    = ckpnExisting - ckpnSaving;
   const savingPct    = ckpnExisting ? ckpnSaving/ckpnExisting*100 : 0;
   const tunggakanJt  = sum(list.filter(d=>d.dpd>0),d=>d.osJt) * f;
+  const totalTunggakanAll = sum(list,d=>d.tunggakanTotal||0) * f;
 
   const ser = (cur,pat)=>pat.map((p,i)=>({ bln:P.months[i], nilai:+(cur*p).toFixed(3) }));
   const delta = (pat)=> (1-pat[4]/pat[5])*100;
@@ -221,7 +235,7 @@ function buildModel(list, periode) {
   const gA = groupBy(d=>d.aoId);
   const perAO = Object.values(gA).map(it=>{
     const a = it[0];
-    return { nama:a.ao, uker:a.ukerNama, deb:it.length, osJt:sum(it,d=>d.osJt)*f,
+    return { nama:a.ao, uker:a.ukerNama, pn:a.pn||"", deb:it.length, osJt:sum(it,d=>d.osJt)*f,
       tinggi:it.filter(d=>d.tier==="tinggi").length,
       actionTotal:it.filter(d=>d.hasAction).length,
       actionSelesai:it.filter(d=>d.resolved).length,
@@ -229,7 +243,8 @@ function buildModel(list, periode) {
   }).sort((a,b)=>b.osJt-a.osJt);
 
   const gS = groupBy(d=>d.sektor);
-  const perSektor = SEKTOR.filter(s=>gS[s]).map(s=>({ sektor:s, osJt:sum(gS[s],d=>d.osJt)*f, deb:gS[s].length }))
+  const perSektor = Object.entries(gS)
+    .map(([s,items])=>({ sektor:s, osJt:sum(items,d=>d.osJt)*f, deb:items.length }))
     .sort((a,b)=>b.osJt-a.osJt);
   const gSeg = groupBy(d=>d.segment);
   const perSegment = ["Mikro","Kecil","Menengah"].filter(s=>gSeg[s]).map(s=>({ segment:s, osJt:sum(gSeg[s],d=>d.osJt)*f, deb:gSeg[s].length }));
@@ -273,7 +288,7 @@ function buildModel(list, periode) {
   const jenisFor = (d,i)=> d.tier==="tinggi" ? (i%2?"Restrukturisasi":"Kunjungan & Negosiasi")
     : (i%2?"Reminder & Monitoring":"Surat Peringatan 1");
   const actionPlans = list.filter(d=>d.hasAction).sort((a,b)=>b.osJt-a.osJt).slice(0,40).map((d,i)=>({
-    tgl:`${20+(i%9)}/05/2026`, cif:d.cif, nama:d.nama, ao:d.ao, kol:d.kol,
+    tgl:`${20+(i%9)}/05/2026`, cif:d.cif, nama:d.nama, ao:d.pn?`${d.pn} – ${d.ao}`:d.ao, kol:d.kol,
     jenis:jenisFor(d,i), target:`${10+(i%18)}/06/2026`,
     status:d.resolved?"selesai":"in_progress", hasil:d.resolved?"Debitur konfirmasi membaik":"Dalam proses tindak lanjut",
   }));
@@ -285,15 +300,28 @@ function buildModel(list, periode) {
 
   const ser12 = (cur,pat)=>pat.map((p,i)=>({ bln:P.months12[i], nilai:+(cur*p).toFixed(3) }));
 
+  const realisasiPctArr = [0.09,0.11,0.10,0.08,0.12,0.09,0.10,0.11,0.08,0.10,0.09,0.12,0.10];
+  const realisasiPerUker = perUker.map((u,i)=>({ kode:u.kode, nama:u.nama, realisasiJt:Math.round(u.osJt*realisasiPctArr[i%realisasiPctArr.length]) }));
+  const realisasiJt = realisasiPerUker.reduce((s,u)=>s+u.realisasiJt,0);
+  const nettDisbursed = Math.round(realisasiJt - totalOsJt * 0.072);
+
+  perUker.filter(u=>u.npl>4.5).slice(0,4).forEach(u=>{
+    alerts.push({ level:"sedang", tag:"alertOS", text:`Unit ${u.nama} — Estimasi penurunan outstanding > 10% (bulan ini vs bulan lalu) · OS: ${fJt(u.osJt)}`, time:mkAlertTime(alerts.length) });
+  });
+  perAO.filter(a=>a.tinggi>=3).slice(0,3).forEach(a=>{
+    alerts.push({ level:"sedang", tag:"alertOS", text:`${a.pn||""} – ${a.nama} — Estimasi penurunan outstanding RM/Mantri > 15% · OS: ${fJt(a.osJt)}`, time:mkAlertTime(alerts.length) });
+  });
+
   return {
     P, totalDeb, totalOsJt, tier, kol, npl, ckpnExisting, ckpnAfter, ckpnSaving, savingPct,
-    tunggakanJt,
+    tunggakanJt, totalTunggakanAll,
     trendTunggakan: ser(tunggakanJt/1000, PAT_TUNGG),
     trendCKPN: ser(ckpnExisting/1000, PAT_CKPN),
     trendTunggakan12: ser12(tunggakanJt/1000, PAT_TUNGG_12),
     trendCKPN12: ser12(ckpnExisting/1000, PAT_CKPN_12),
     deltas:{ os:delta(PAT_OS), deb:delta(PAT_DEB), ckpn:delta(PAT_CKPN) },
     top10, ringkasanEW, perUker, perAO, perSektor, perSegment, alerts, actionPlans, ckpnDebitur,
+    realisasiJt, nettDisbursed, realisasiPerUker,
   };
 }
 
@@ -450,7 +478,7 @@ const SubFilter = ({ children }) => (
 );
 
 
-function Dashboard({ m, go }) {
+function DashboardPinca({ m, go }) {
   const w = useWindowWidth();
   const kpiCols   = w >= 1280 ? "repeat(6,1fr)" : w >= 900 ? "repeat(3,1fr)" : "repeat(2,1fr)";
   const chartsRow = w >= 1100 ? "1fr 1fr 1fr" : w >= 720 ? "1fr 1fr" : "1fr";
@@ -470,6 +498,9 @@ function Dashboard({ m, go }) {
     { icon:"infoCircle", color:C.kpiAmber,  label:"Debitur Risiko (2A-2B)",                value:fNum(m.tier.sedang),                 sub:fPct(m.ringkasanEW[1].pct)+" dari total", subColor:C.amber },
     { icon:"warning",    color:C.kpiRed,    label:"Debitur Bermasalah (3-5)",              value:fNum(m.tier.tinggi),                 sub:fPct(m.ringkasanEW[0].pct)+" dari total", subColor:C.red },
     { icon:"shield",     color:C.kpiPurple, label:"CKPN Existing",           prefix:"Rp", value:fMil(m.ckpnExisting).replace("Rp ",""), sub:up(m.deltas.ckpn), subColor:C.red },
+    { icon:"wallet",     color:C.kpiRed,    label:"Total Tunggakan",         prefix:"Rp", value:fMil(m.totalTunggakanAll||0).replace("Rp ",""), sub:"Estimasi seluruh tunggakan", subColor:C.red },
+    { icon:"thumb",      color:C.kpiGreen,  label:"Realisasi Baru Bln Ini",  prefix:"Rp", value:fMil(m.realisasiJt||0).replace("Rp ",""), sub:"Pinjaman baru bulan ini", subColor:C.green },
+    { icon:"download",   color:C.kpiTeal,   label:"Nett Disbursed",          prefix:"Rp", value:fMil(m.nettDisbursed||0).replace("Rp ",""), sub:"Realisasi dikurangi pelunasan", subColor:C.navy },
   ];
 
   return (
@@ -645,6 +676,177 @@ function Dashboard({ m, go }) {
   );
 }
 
+function DashboardMB({ m, go }) {
+  const w = useWindowWidth();
+  const kpiCols = w >= 900 ? "repeat(3,1fr)" : "1fr";
+  const inProgress = m.actionPlans.filter(p=>p.status==="in_progress");
+  const selesai = m.actionPlans.filter(p=>p.status==="selesai").length;
+  const statusData = [{ legend:"Selesai", value:selesai, color:C.green },{ legend:"In Progress", value:inProgress.length, color:C.amber }];
+  const alertTinggi = m.alerts.filter(a=>a.level==="tinggi");
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      <div style={{ display:"grid", gridTemplateColumns:kpiCols, gap:12 }}>
+        <KpiCard icon="wallet" color={C.kpiBlue} label="Total Outstanding" prefix="Rp" value={fMil(m.totalOsJt).replace("Rp ","")} sub={fNum(m.totalDeb)+" debitur"} subColor={C.navy} />
+        <KpiCard icon="warning" color={C.kpiRed} label="NPL Ratio" value={fPct(m.npl)} sub="Kol 3-5 / Total OS" subColor={C.red} />
+        <KpiCard icon="shield" color={C.kpiPurple} label="CKPN Existing" prefix="Rp" value={fMil(m.ckpnExisting).replace("Rp ","")} sub={"Potensi hemat "+fMil(m.ckpnSaving)} subColor={C.green} />
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns: w>=1000?"1fr 1fr":"1fr", gap:12 }}>
+        <div style={card}>
+          <CardTitle>NPL Ratio per Unit Kerja</CardTitle>
+          <BarH data={[...m.perUker].sort((a,b)=>b.npl-a.npl)} dataKey="npl" nameKey="nama" color={C.kpiRed} fmt={(v)=>fPct(v,1)} />
+        </div>
+        <div style={card}>
+          <CardTitle>Progress Action Plan</CardTitle>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <Donut data={statusData} centerTop={fNum(m.actionPlans.length)} centerBottom="Action" unit="action" />
+            <div style={{ flex:1 }}>
+              {statusData.map((d,i)=>(
+                <div key={i} style={{ display:"flex", alignItems:"center", gap:8, fontSize:12.5, padding:"5px 0" }}>
+                  <span style={{ width:10, height:10, borderRadius:"50%", background:d.color }} />
+                  <span style={{ color:C.textMd }}>{d.legend}</span>
+                  <span style={{ marginLeft:"auto", color:C.text, fontWeight:600 }}>{fNum(d.value)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"12px 16px 0" }}><CardTitle>Action Plan Belum Selesai</CardTitle></div>
+        <Tabel headers={["Tgl Input","Nama Debitur","PIC","Kol","Jenis Tindakan","Target","Status"]} colW={[90,150,140,46,160,95,110]}
+          rows={inProgress.slice(0,8).map(p=>[
+            p.tgl, p.nama, p.ao, p.kol, p.jenis, p.target,
+            <span style={{ display:"inline-block", padding:"2px 10px", borderRadius:20, background:C.amberLt, color:C.amber, fontSize:11.5, fontWeight:600 }}>In Progress</span>,
+          ])} />
+        <div onClick={()=>go("action")} style={{ textAlign:"center", padding:"10px", borderTop:`1px solid ${C.border}`, color:C.navy, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Lihat Semua</div>
+      </div>
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"12px 16px 8px" }}><CardTitle>Alert Risiko Tinggi</CardTitle></div>
+        {alertTinggi.length===0 && <div style={{ padding:16, color:C.gray, fontSize:13, textAlign:"center" }}>Tidak ada alert risiko tinggi</div>}
+        {alertTinggi.slice(0,5).map((a,i)=>(
+          <div key={i} style={{ display:"flex", gap:10, alignItems:"flex-start", padding:"10px 16px", borderBottom:`1px solid #F1F3F6` }}>
+            <span style={{ color:C.red, flexShrink:0, marginTop:1 }}><Ic n="warning" size={17} /></span>
+            <div style={{ flex:1, fontSize:12.5, color:C.textMd, lineHeight:1.35 }}>{a.text}</div>
+            <div style={{ fontSize:10.5, color:C.gray, whiteSpace:"nowrap", flexShrink:0 }}>{a.time}</div>
+          </div>
+        ))}
+        <div onClick={()=>go("ews")} style={{ textAlign:"center", padding:"10px", borderTop:`1px solid ${C.border}`, color:C.navy, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Lihat Semua Alert</div>
+      </div>
+    </div>
+  );
+}
+
+function DashboardKepalaUnit({ m, go }) {
+  const w = useWindowWidth();
+  const actionUnit = m.actionPlans.slice(0,5);
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      <div style={{ display:"grid", gridTemplateColumns: w>=900?"repeat(3,1fr)":"1fr", gap:12 }}>
+        <KpiCard icon="wallet" color={C.kpiBlue} label="Total OS Unit" prefix="Rp" value={fMil(m.totalOsJt).replace("Rp ","")} sub={fNum(m.totalDeb)+" debitur"} subColor={C.navy} />
+        <KpiCard icon="warning" color={C.kpiRed} label="NPL Unit" value={fPct(m.npl)} sub="Kol 3-5 / Total OS" subColor={C.red} />
+        <KpiCard icon="shield" color={C.kpiPurple} label="CKPN Unit" prefix="Rp" value={fMil(m.ckpnExisting).replace("Rp ","")} sub={"Coverage "+fPct(m.totalOsJt?m.ckpnExisting/m.totalOsJt*100:0)} subColor={C.red} />
+      </div>
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"12px 16px 0" }}><CardTitle>Debitur Risiko Tinggi di Unit Ini</CardTitle></div>
+        <Tabel headers={["CIF","Nama Debitur","Mantri","Outstanding","DPD","Kol","Skor"]} colW={[88,160,110,110,50,46,56]}
+          rows={m.top10.slice(0,5).map(d=>[
+            d.cif, d.nama, d.ao,
+            <span style={{ fontWeight:500 }}>{fJt(d.osJt)}</span>,
+            <span style={{ color:C.red, fontWeight:600 }}>{d.dpd}</span>,
+            d.kol, <SkorPill s={d.skor} />,
+          ])} />
+        <div onClick={()=>go("debitur")} style={{ textAlign:"center", padding:"10px", borderTop:`1px solid ${C.border}`, color:C.navy, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Lihat Semua Debitur</div>
+      </div>
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"12px 16px 0" }}><CardTitle>Action Plan AO di Unit Ini</CardTitle></div>
+        <Tabel headers={["Tgl","Nama Debitur","PIC","Kol","Jenis","Target","Status"]} colW={[80,150,140,46,150,90,110]}
+          rows={actionUnit.map(p=>[
+            p.tgl, p.nama, p.ao, p.kol, p.jenis, p.target,
+            <span style={{ display:"inline-block", padding:"2px 10px", borderRadius:20, background:p.status==="selesai"?C.greenLt:C.amberLt, color:p.status==="selesai"?C.green:C.amber, fontSize:11.5, fontWeight:600 }}>{statusLabel[p.status]}</span>,
+          ])} />
+        <div onClick={()=>go("action")} style={{ textAlign:"center", padding:"10px", borderTop:`1px solid ${C.border}`, color:C.navy, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Lihat Semua</div>
+      </div>
+    </div>
+  );
+}
+
+function DashboardAO({ m, go }) {
+  const w = useWindowWidth();
+  const debBermasalah = m.tier.sedang + m.tier.tinggi;
+  const actionPending = m.actionPlans.filter(p=>p.status==="in_progress");
+  const alertAO = m.alerts.filter(a=>a.level!=="rendah").slice(0,5);
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      <div style={{ display:"grid", gridTemplateColumns: w>=900?"repeat(3,1fr)":"1fr", gap:12 }}>
+        <KpiCard icon="wallet" color={C.kpiBlue} label="Total OS Binaan" prefix="Rp" value={fMil(m.totalOsJt).replace("Rp ","")} sub={fNum(m.totalDeb)+" debitur"} subColor={C.navy} />
+        <KpiCard icon="warning" color={C.kpiRed} label="Debitur Bermasalah" value={fNum(debBermasalah)} sub={fNum(m.tier.tinggi)+" risiko tinggi"} subColor={C.red} />
+        <KpiCard icon="clipboard" color={C.kpiAmber} label="Action Plan Pending" value={fNum(actionPending.length)} sub="Perlu diselesaikan" subColor={C.amber} />
+      </div>
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"12px 16px 0" }}><CardTitle>Action Plan Saya</CardTitle></div>
+        <Tabel headers={["Tgl","Nama Debitur","Kol","Jenis Tindakan","Target","Status"]} colW={[80,170,46,170,90,110]}
+          rows={actionPending.slice(0,6).map(p=>[
+            p.tgl, p.nama, p.kol, p.jenis, p.target,
+            <span style={{ display:"inline-block", padding:"2px 10px", borderRadius:20, background:C.amberLt, color:C.amber, fontSize:11.5, fontWeight:600 }}>In Progress</span>,
+          ])} />
+        <div onClick={()=>go("action")} style={{ textAlign:"center", padding:"10px", borderTop:`1px solid ${C.border}`, color:C.navy, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Lihat Semua</div>
+      </div>
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"12px 16px 8px" }}><CardTitle>Alert Debitur Binaan</CardTitle></div>
+        {alertAO.length===0 && <div style={{ padding:16, color:C.gray, fontSize:13, textAlign:"center" }}>Tidak ada alert aktif</div>}
+        {alertAO.map((a,i)=>(
+          <div key={i} style={{ display:"flex", gap:10, alignItems:"flex-start", padding:"10px 16px", borderBottom:`1px solid #F1F3F6` }}>
+            <span style={{ color:risikoColor[a.level], flexShrink:0, marginTop:1 }}><Ic n="warning" size={17} /></span>
+            <div style={{ flex:1, fontSize:12.5, color:C.textMd, lineHeight:1.35 }}>{a.text}</div>
+            <div style={{ fontSize:10.5, color:C.gray, whiteSpace:"nowrap", flexShrink:0 }}>{a.time}</div>
+          </div>
+        ))}
+        <div onClick={()=>go("ews")} style={{ textAlign:"center", padding:"10px", borderTop:`1px solid ${C.border}`, color:C.navy, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Lihat Semua Alert</div>
+      </div>
+    </div>
+  );
+}
+
+function DashboardCollection({ m, go }) {
+  const w = useWindowWidth();
+  const kol25 = m.kol.filter(k=>k.kol!=="1");
+  const jmlKol25 = kol25.reduce((s,k)=>s+k.value,0);
+  const totalTunggakan = m.totalTunggakanAll||m.tunggakanJt;
+  const actionPenagihan = m.actionPlans.filter(p=>p.status==="in_progress");
+  const progressData = [{ legend:"Selesai", value:m.actionPlans.filter(p=>p.status==="selesai").length, color:C.green },{ legend:"In Progress", value:actionPenagihan.length, color:C.amber }];
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      <div style={{ display:"grid", gridTemplateColumns: w>=900?"repeat(2,1fr)":"1fr", gap:12 }}>
+        <KpiCard icon="warning" color={C.kpiRed} label="Debitur Kol 2-5" value={fNum(jmlKol25)} sub={"Risiko: "+fNum(m.tier.tinggi)+" tinggi, "+fNum(m.tier.sedang)+" sedang"} subColor={C.red} />
+        <KpiCard icon="wallet" color={C.kpiAmber} label="Total Tunggakan" prefix="Rp" value={fMil(totalTunggakan).replace("Rp ","")} sub="Estimasi total tunggakan" subColor={C.amber} />
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns: w>=900?"1fr 1fr":"1fr", gap:12 }}>
+        <div style={{ ...card, padding:0, overflow:"hidden" }}>
+          <div style={{ padding:"12px 16px 0" }}><CardTitle>Action Plan Penagihan Pending</CardTitle></div>
+          <Tabel headers={["Nama Debitur","PIC","Kol","Jenis","Target"]} colW={[160,140,46,160,90]}
+            rows={actionPenagihan.slice(0,6).map(p=>[p.nama, p.ao, p.kol, p.jenis, p.target])} />
+          <div onClick={()=>go("action")} style={{ textAlign:"center", padding:"10px", borderTop:`1px solid ${C.border}`, color:C.navy, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Lihat Semua</div>
+        </div>
+        <div style={card}>
+          <CardTitle>Progress Recovery</CardTitle>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <Donut data={progressData} centerTop={fNum(m.actionPlans.length)} centerBottom="Action" unit="action" />
+            <div style={{ flex:1 }}>
+              {progressData.map((d,i)=>(
+                <div key={i} style={{ display:"flex", alignItems:"center", gap:8, fontSize:12.5, padding:"5px 0" }}>
+                  <span style={{ width:10, height:10, borderRadius:"50%", background:d.color }} />
+                  <span style={{ color:C.textMd }}>{d.legend}</span>
+                  <span style={{ marginLeft:"auto", color:C.text, fontWeight:600 }}>{fNum(d.value)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PortfolioStatus({ m }) {
   const w = useWindowWidth();
   const c3 = w >= 1100 ? "1.1fr 1fr 1fr" : w >= 760 ? "1fr 1fr" : "1fr";
@@ -685,6 +887,10 @@ function PortfolioStatus({ m }) {
         <CardTitle>Outstanding per Unit Kerja</CardTitle>
         <BarH data={m.perUker} dataKey="osJt" nameKey="nama" color={C.kpiTeal} fmt={(v)=>fMilV(v/1000)} />
       </div>
+      <div style={card}>
+        <CardTitle>Realisasi per Unit Kerja</CardTitle>
+        <BarH data={m.realisasiPerUker||[]} dataKey="realisasiJt" nameKey="nama" color={C.kpiGreen} fmt={(v)=>fMilV(v/1000)} />
+      </div>
     </div>
   );
 }
@@ -692,7 +898,7 @@ function PortfolioStatus({ m }) {
 function EarlyWarning({ m }) {
   const w = useWindowWidth();
   const [filter, setFilter] = useState("semua");
-  const alerts = filter==="semua" ? m.alerts : m.alerts.filter(a=>a.level===filter);
+  const alerts = filter==="semua" ? m.alerts : filter==="alertOS" ? m.alerts.filter(a=>a.tag==="alertOS") : m.alerts.filter(a=>a.level===filter);
   const ukerAlert = m.perUker.map(u=>({ nama:u.nama, tinggi:u.tinggi })).filter(u=>u.tinggi>0).sort((a,b)=>b.tinggi-a.tinggi);
   const countByLevel = { tinggi:m.alerts.filter(a=>a.level==="tinggi").length, sedang:m.alerts.filter(a=>a.level==="sedang").length, rendah:m.alerts.filter(a=>a.level==="rendah").length };
 
@@ -728,13 +934,14 @@ function EarlyWarning({ m }) {
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
         <div style={{ padding:"12px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
           <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-            {["semua","tinggi","sedang","rendah"].map(lv=>{
-              const cnt = lv==="semua" ? m.alerts.length : countByLevel[lv];
+            {["semua","tinggi","sedang","rendah","alertOS"].map(lv=>{
+              const cnt = lv==="semua" ? m.alerts.length : lv==="alertOS" ? m.alerts.filter(a=>a.tag==="alertOS").length : countByLevel[lv];
               const active = filter===lv;
-              const col = lv==="semua" ? C.navy : risikoColor[lv];
+              const col = lv==="semua" ? C.navy : lv==="alertOS" ? C.kpiTeal : risikoColor[lv];
+              const bg  = lv==="semua" ? C.navyLt : lv==="alertOS" ? "#E0F2F1" : risikoBg[lv];
               return (
-                <button key={lv} onClick={()=>setFilter(lv)} style={{ padding:"4px 12px", border:`1px solid ${active?col:C.border}`, borderRadius:20, background:active?(lv==="semua"?C.navyLt:risikoBg[lv]):C.white, color:active?col:C.gray, fontSize:12, fontWeight:active?700:500, cursor:"pointer" }}>
-                  {lv==="semua"?"Semua":risikoLabel[lv]} <span style={{ fontWeight:700 }}>({cnt})</span>
+                <button key={lv} onClick={()=>setFilter(lv)} style={{ padding:"4px 12px", border:`1px solid ${active?col:C.border}`, borderRadius:20, background:active?bg:C.white, color:active?col:C.gray, fontSize:12, fontWeight:active?700:500, cursor:"pointer" }}>
+                  {lv==="semua"?"Semua":lv==="alertOS"?"Alert OS":risikoLabel[lv]} <span style={{ fontWeight:700 }}>({cnt})</span>
                 </button>
               );
             })}
@@ -766,6 +973,7 @@ function DaftarDebitur({ list }) {
   const [selectedUker, setSelectedUker] = useState([]);
   const [sortBy, setSortBy] = useState("default");
   const [page, setPage] = useState(1);
+  const [expandedCif, setExpandedCif] = useState(null);
   const perPage = 12;
 
   const ukerList = UKER.filter(u=>list.some(d=>d.uker===u.kode));
@@ -801,18 +1009,73 @@ function DaftarDebitur({ list }) {
         <span style={{ marginLeft:"auto", fontSize:13, color:C.gray }}>{fNum(sorted.length)} debitur</span>
       </SubFilter>
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
-        <Tabel
-          headers={["CIF","Nama Debitur","Unit Kerja","Mantri Pengelola","Outstanding","Kol","DPD","Skor","Status Risiko"]}
-          colW={[88,150,120,120,110,46,50,56,120]}
-          rows={shown.map(d=>[
-            d.cif, d.nama, d.ukerNama, d.ao,
-            <span style={{ fontWeight:500 }}>{fJt(d.osJt)}</span>,
-            d.kol,
-            <span style={{ color:d.dpd>30?C.red:d.dpd>0?C.amber:C.green, fontWeight:600 }}>{d.dpd}</span>,
-            <SkorPill s={d.skor} />,
-            <Badge level={d.tier} />,
-          ])}
-        />
+        <div style={{ overflowX:"auto" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5, tableLayout:"fixed" }}>
+            <thead>
+              <tr>
+                {["CIF","Nama Debitur","Unit Kerja","Mantri Pengelola","Sektor Usaha","Outstanding","Kol","DPD","Skor","Status Risiko"].map((h,i)=>(
+                  <th key={i} style={{ padding:"9px 12px", color:C.gray, fontWeight:600, fontSize:10.5, textTransform:"uppercase", textAlign:"left", width:[88,150,120,110,100,110,46,50,56,120][i], whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}`, background:C.grayLt }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((d,ri)=>{
+                const isExp = expandedCif===d.cif;
+                return [
+                  <tr key={d.cif} onClick={()=>setExpandedCif(isExp?null:d.cif)} style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{d.cif}</td>
+                    <td style={{ padding:"9px 12px", color:C.text, fontWeight:500 }}>{d.nama}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{d.ukerNama}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{d.ao}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{d.sektor}</td>
+                    <td style={{ padding:"9px 12px", fontWeight:500, color:C.textMd }}>{fJt(d.osJt)}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{d.kol}</td>
+                    <td style={{ padding:"9px 12px", color:d.dpd>30?C.red:d.dpd>0?C.amber:C.green, fontWeight:600 }}>{d.dpd}</td>
+                    <td style={{ padding:"9px 12px" }}><SkorPill s={d.skor} /></td>
+                    <td style={{ padding:"9px 12px" }}><Badge level={d.tier} /></td>
+                  </tr>,
+                  isExp && (()=>{
+                    const dpd2 = d.dpd||0;
+                    const months2 = Math.ceil(dpd2/30)||0;
+                    const tP = d.tunggakanPokok!=null ? d.tunggakanPokok : Math.round(d.osJt*(dpd2/360));
+                    const tB = d.tunggakanBunga!=null ? d.tunggakanBunga : Math.round(tP*0.15/12*months2);
+                    const tD = d.tunggakanDenda!=null ? d.tunggakanDenda : Math.round(tP*0.02*months2);
+                    const tPy= d.tunggakanPenalty!=null ? d.tunggakanPenalty : (dpd2>90?Math.round(tP*0.01):0);
+                    const tT = d.tunggakanTotal!=null ? d.tunggakanTotal : tP+tB+tD+tPy;
+                    return (
+                      <tr key={d.cif+"-exp"} style={{ background:"#F0F7FF" }}>
+                        <td colSpan={10} style={{ padding:"10px 24px 14px" }}>
+                          <div style={{ fontSize:12, fontWeight:700, color:C.navy, marginBottom:8 }}>Breakdown Komponen Tunggakan — {d.nama}</div>
+                          <table style={{ borderCollapse:"collapse", fontSize:12.5 }}>
+                            <thead>
+                              <tr style={{ background:C.navyLt }}>
+                                {["Komponen","Nominal"].map(h=>(
+                                  <th key={h} style={{ padding:"6px 16px", color:C.navy, fontWeight:600, fontSize:11, textAlign:h==="Nominal"?"right":"left", whiteSpace:"nowrap" }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {[["Tunggakan Pokok",tP],["Tunggakan Bunga",tB],["Tunggakan Denda",tD],["Tunggakan Penalty",tPy]].map(([label,val])=>(
+                                <tr key={label} style={{ borderBottom:`1px solid #D1E4F6` }}>
+                                  <td style={{ padding:"5px 16px", color:C.textMd }}>{label}</td>
+                                  <td style={{ padding:"5px 16px", color:C.textMd, textAlign:"right" }}>{fJt(val||0)}</td>
+                                </tr>
+                              ))}
+                              <tr style={{ background:C.navy }}>
+                                <td style={{ padding:"6px 16px", color:"#fff", fontWeight:700 }}>Total Tunggakan</td>
+                                <td style={{ padding:"6px 16px", color:"#fff", fontWeight:700, textAlign:"right" }}>{fJt(tT||0)}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    );
+                  })()
+                ];
+              })}
+            </tbody>
+          </table>
+        </div>
         {sorted.length===0 && <div style={{ padding:24, textAlign:"center", color:C.gray, fontSize:14 }}>Tidak ada data</div>}
         {sorted.length>0 && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 16px", borderTop:`1px solid ${C.border}` }}>
@@ -1062,10 +1325,10 @@ function KinerjaAO({ m }) {
         <div style={{ padding:"14px 16px 0" }}><CardTitle>Rekap Kinerja per Mantri</CardTitle></div>
         <div style={{ maxHeight:420, overflowY:"auto", overflowX:"auto" }}>
           <Tabel stickyHeader
-            headers={["Mantri","Unit Kerja","Outstanding","Jml Debitur","Risiko Tinggi","Action Plan","Berhasil"]}
-            colW={[130,140,120,90,100,90,90]}
+            headers={["Mantri","PN","Unit Kerja","Outstanding","Jml Debitur","Risiko Tinggi","Action Plan","Berhasil"]}
+            colW={[130,90,140,120,90,100,90,90]}
             rows={m.perAO.map(k=>[
-              k.nama, k.uker, fJt(k.osJt), k.deb,
+              k.nama, <span style={{ fontFamily:"monospace", fontSize:11.5, color:C.navy }}>{k.pn}</span>, k.uker, fJt(k.osJt), k.deb,
               <span style={{ color:C.red, fontWeight:600 }}>{k.tinggi}</span>,
               k.actionTotal,
               <span style={{ color:C.navy, fontWeight:600 }}>{k.berhasil}</span>,
@@ -1393,6 +1656,7 @@ export default function App() {
     return sourceDebitur.filter(d=>{
       if (perms.scope==="ao" && d.aoId!==DEMO_AO_ID) return false;
       if (perms.scope==="bermasalah" && d.tier==="rendah") return false;
+      if (perms.scope==="uker" && d.uker!==DEMO_KEPALA_UKER_KODE) return false;
       return (filters.uker==="semua" || d.uker===filters.uker)
         && (filters.ao==="semua" || d.aoId===filters.ao)
         && (filters.segment==="semua" || d.segment===filters.segment);
@@ -1403,6 +1667,7 @@ export default function App() {
   if (!perms) return <Login onLogin={(id)=>{
     setRole(id); setPage("dashboard"); setProfileOpen(false);
     if (id==="ao") setFilters({ uker:DEMO_AO.uker, ao:DEMO_AO_ID, segment:"semua", periode:"Mei 2026" });
+    else if (id==="kepalaUnit") setFilters({ uker:DEMO_KEPALA_UKER_KODE, ao:"semua", segment:"semua", periode:"Mei 2026" });
     else setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" });
   }} />;
 
@@ -1410,8 +1675,9 @@ export default function App() {
   const safePage = perms.menus.includes(page) ? page : "dashboard";
   const cur = MENU.find(x=>x.id===safePage);
   const sub = cur.sub.replace("__DATE__", m.P.date);
+  const DashboardComp = role==="mb" ? DashboardMB : role==="ao" ? DashboardAO : role==="collection" ? DashboardCollection : role==="kepalaUnit" ? DashboardKepalaUnit : DashboardPinca;
   const pages = {
-    dashboard:   <Dashboard m={m} go={(p)=>perms.menus.includes(p)&&setPage(p)} />,
+    dashboard:   <DashboardComp m={m} go={(p)=>perms.menus.includes(p)&&setPage(p)} perms={perms} />,
     portfolio:   <PortfolioStatus m={m} />,
     ews:         <EarlyWarning m={m} />,
     debitur:     <DaftarDebitur list={list} />,
@@ -1435,6 +1701,7 @@ export default function App() {
               {sub}
               {perms.scope==="ao" && <span style={{ color:C.navy, fontWeight:600 }}> · Portofolio {perms.nama} ({fNum(list.length)} debitur)</span>}
               {perms.scope==="bermasalah" && <span style={{ color:C.red, fontWeight:600 }}> · Debitur bermasalah ({fNum(list.length)})</span>}
+              {perms.scope==="uker" && <span style={{ color:C.kpiTeal, fontWeight:600 }}> · Unit {DEMO_KEPALA_UNIT?.nama} ({fNum(list.length)} debitur)</span>}
               {aktifFilter && <span style={{ color:C.navy, fontWeight:600 }}> · Filter aktif: {fNum(list.length)} debitur</span>}
             </div>
           </div>
@@ -1475,13 +1742,13 @@ export default function App() {
                   <div style={{ padding:8 }}>
                     <div style={{ fontSize:10.5, color:C.gray, padding:"2px 6px 6px" }}>GANTI AKUN DEMO</div>
                     {Object.values(ROLES).map(r=>(
-                      <div key={r.id} onClick={()=>{ setRole(r.id); setProfileOpen(false); setPage("dashboard"); if(r.id==="ao") setFilters({uker:DEMO_AO.uker,ao:DEMO_AO_ID,segment:"semua",periode:filters.periode}); else setFilters(f=>({...f,uker:"semua",ao:"semua",segment:"semua"})); }}
+                      <div key={r.id} onClick={()=>{ setRole(r.id); setProfileOpen(false); setPage("dashboard"); if(r.id==="ao") setFilters({uker:DEMO_AO.uker,ao:DEMO_AO_ID,segment:"semua",periode:filters.periode}); else if(r.id==="kepalaUnit") setFilters({uker:DEMO_KEPALA_UKER_KODE,ao:"semua",segment:"semua",periode:filters.periode}); else setFilters(f=>({...f,uker:"semua",ao:"semua",segment:"semua"})); }}
                         style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 6px", borderRadius:7, cursor:"pointer", background: r.id===role?C.grayLt:"transparent" }}>
                         <div style={{ width:24, height:24, borderRadius:"50%", background:r.color, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={r.icon} size={14} /></div>
                         <span style={{ fontSize:12.5, color:C.textMd, fontWeight: r.id===role?700:500 }}>{r.title}</span>
                       </div>
                     ))}
-                    <div onClick={()=>{ setRole(null); setProfileOpen(false); }} style={{ marginTop:6, padding:"8px", textAlign:"center", borderTop:`1px solid ${C.border}`, color:C.red, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Keluar</div>
+                    <div onClick={()=>{ setRole(null); setProfileOpen(false); setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" }); }} style={{ marginTop:6, padding:"8px", textAlign:"center", borderTop:`1px solid ${C.border}`, color:C.red, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Keluar</div>
                   </div>
                 </div>
               )}

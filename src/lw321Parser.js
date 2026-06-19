@@ -142,7 +142,8 @@ export function parseLW321(file) {
 
           const mantriRaw = row[I.mantri];
           const mantriNama = extractMantriName(mantriRaw);
-          const mantriId = String(mantriRaw || '').split(/\s*[–\-]\s*/)[0].trim() || `${ukerKode}-0`;
+          const mantriPn = String(mantriRaw || '').split(/\s*[–\-]\s*/)[0].trim();
+          const mantriId = mantriPn || `${ukerKode}-0`;
 
           const plafonIDR = parseFloat(row[I.plafon]) || balanceIDR;
           const segment = mapSegment(plafonIDR);
@@ -150,11 +151,19 @@ export function parseLW321(file) {
 
           const descSegmen = String(row[I.descSegmen] || '').trim();
 
+          const tunggakanPokokIdr = parseFloat(row[I.tunggakan]) || 0;
+          const tPokok = tunggakanPokokIdr > 0 ? Math.round(tunggakanPokokIdr / 1_000_000) : Math.round(balanceJt * (dpd / 360));
+          const months = Math.ceil(dpd / 30) || 0;
+          const tBunga = Math.round(tPokok * 0.15 / 12 * months);
+          const tDenda = Math.round(tPokok * 0.02 * months);
+          const tPenalty = dpd > 90 ? Math.round(tPokok * 0.01) : 0;
+
           debitur.push({
             cif:      String(row[I.cif] || '').trim(),
             nama:     String(row[I.nama] || '').trim(),
             ao:       `Mantri ${mantriNama}`,
             aoId:     mantriId,
+            pn:       mantriPn,
             uker:     ukerKode,
             ukerNama,
             segment,
@@ -166,6 +175,11 @@ export function parseLW321(file) {
             tier,
             hasAction: tier !== 'rendah',
             resolved:  false,
+            tunggakanPokok:   tPokok,
+            tunggakanBunga:   tBunga,
+            tunggakanDenda:   tDenda,
+            tunggakanPenalty: tPenalty,
+            tunggakanTotal:   tPokok + tBunga + tDenda + tPenalty,
           });
         }
 
