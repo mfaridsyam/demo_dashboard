@@ -187,6 +187,86 @@ const PAT_TUNGG = [0.66,0.74,0.81,0.94,0.86,1.0];
 const PAT_CKPN_12  = [0.62,0.65,0.68,0.72,0.76,0.81, 0.87,0.90,0.92,0.95,0.98,1.0];
 const PAT_TUNGG_12 = [0.38,0.43,0.49,0.54,0.58,0.62, 0.66,0.74,0.81,0.94,0.86,1.0];
 
+// --- Snapshot harian & bulanan (mock) ---
+const HARI_KERJA_JUNI = ["1 Jun","2 Jun","3 Jun","4 Jun","5 Jun","8 Jun","9 Jun","10 Jun","11 Jun","12 Jun","15 Jun","16 Jun","17 Jun","18 Jun","19 Jun","20 Jun"];
+
+// Nilai acuan Mei '26 (akhir bulan) — estimasi konsisten dengan pola buildModel
+const _SB = { osJt:28500, totalDeb:440, npl:7.80, ckpnJt:1185, tunggakanJt:3180 };
+const _PAT6_DEB = [0.95,0.96,0.97,0.98,0.99,1.0];
+const _PAT6_NPL = [0.83,0.87,0.90,0.94,0.97,1.0];
+
+const SNAPSHOT_BULANAN = ["Des '25","Jan '26","Feb '26","Mar '26","Apr '26","Mei '26"].map((bulan,i)=>({
+  bulan, tipe:"bulanan",
+  osJt:        Math.round(_SB.osJt        * PAT_OS[i]),
+  totalDeb:    Math.round(_SB.totalDeb    * _PAT6_DEB[i]),
+  npl:         +(_SB.npl                 * _PAT6_NPL[i]).toFixed(2),
+  ckpnJt:      Math.round(_SB.ckpnJt     * PAT_CKPN[i]),
+  tunggakanJt: Math.round(_SB.tunggakanJt* PAT_TUNGG[i]),
+}));
+
+const rngSnap = mulberry32(20260620);
+const SNAPSHOT_HARIAN = (()=>{
+  const mei = SNAPSHOT_BULANAN[5];
+  const rows = [];
+  let cur = {
+    osJt:        Math.round(mei.osJt        * 1.004),
+    totalDeb:    mei.totalDeb,
+    npl:         mei.npl,
+    ckpnJt:      Math.round(mei.ckpnJt      * 1.005),
+    tunggakanJt: Math.round(mei.tunggakanJt * 1.004),
+  };
+  for (const tgl of HARI_KERJA_JUNI) {
+    cur = {
+      osJt:        Math.round(cur.osJt        * (1 + (rngSnap()-0.5)*0.006  + 0.0004)),
+      totalDeb:    cur.totalDeb + (rngSnap() > 0.58 ? 1 : 0),
+      npl:         +Math.min(10.5, Math.max(6.0, cur.npl + (rngSnap()-0.46)*0.12)).toFixed(2),
+      ckpnJt:      Math.round(cur.ckpnJt      * (1 + (rngSnap()-0.5)*0.008  + 0.0005)),
+      tunggakanJt: Math.round(cur.tunggakanJt * (1 + (rngSnap()-0.5)*0.008  + 0.0004)),
+    };
+    rows.push({ tgl, tipe:"harian", ...cur });
+  }
+  return rows;
+})();
+
+// --- POIN 2: buildTrendData ---
+function buildTrendData(periode, serCKPN, serTunggakan, serOS, npl) {
+  const isCurrentMonth = periode === "Jun 2026";
+  const monthly = (ser) => ser.map(d => ({ ...d, tipe:"bulanan" }));
+
+  if (!isCurrentMonth) {
+    return {
+      trendOS:        monthly(serOS),
+      trendCKPN:      monthly(serCKPN),
+      trendTunggakan: monthly(serTunggakan),
+      trendNPL:       serCKPN.map((d,i) => ({ bln:d.bln, nilai:+(_PAT6_NPL[i]*npl).toFixed(2), tipe:"bulanan" })),
+      isCurrentMonth: false,
+      label: "6 bulan terakhir",
+    };
+  }
+
+  // Skala SNAPSHOT_HARIAN relatif terhadap titik Mei '26
+  const meiCKPN  = serCKPN[serCKPN.length-1].nilai;
+  const meiTungg = serTunggakan[serTunggakan.length-1].nilai;
+  const meiOS    = serOS[serOS.length-1].nilai;
+  const bCKPN    = SNAPSHOT_BULANAN[5].ckpnJt;
+  const bTungg   = SNAPSHOT_BULANAN[5].tunggakanJt;
+  const bOS      = SNAPSHOT_BULANAN[5].osJt;
+
+  const dailyCKPN  = SNAPSHOT_HARIAN.map(s => ({ bln:s.tgl, nilai:+(s.ckpnJt/bCKPN*meiCKPN).toFixed(3),          tipe:"harian" }));
+  const dailyTungg = SNAPSHOT_HARIAN.map(s => ({ bln:s.tgl, nilai:+(s.tunggakanJt/bTungg*meiTungg).toFixed(3),    tipe:"harian" }));
+  const dailyOS    = SNAPSHOT_HARIAN.map(s => ({ bln:s.tgl, nilai:+(s.osJt/bOS*meiOS).toFixed(3),                 tipe:"harian" }));
+  const dailyNPL   = SNAPSHOT_HARIAN.map(s => ({ bln:s.tgl, nilai:s.npl, tipe:"harian" }));
+
+  return {
+    trendOS:        [...monthly(serOS),        ...dailyOS],
+    trendCKPN:      [...monthly(serCKPN),      ...dailyCKPN],
+    trendTunggakan: [...monthly(serTunggakan), ...dailyTungg],
+    trendNPL:       [...serCKPN.map((d,i) => ({ bln:d.bln, nilai:+(_PAT6_NPL[i]*npl).toFixed(2), tipe:"bulanan" })), ...dailyNPL],
+    isCurrentMonth: true,
+    label: "6 bln + harian Jun 2026",
+  };
+}
+
 const fNum  = (n)=>Math.round(n).toLocaleString("id-ID");
 const fMil  = (jt)=>"Rp "+(jt/1000).toLocaleString("id-ID",{minimumFractionDigits:2,maximumFractionDigits:2})+" M";
 const fJt   = (jt)=>"Rp "+Math.round(jt).toLocaleString("id-ID")+" Jt";
@@ -222,6 +302,7 @@ function buildModel(list, periode) {
   const totalTunggakanAll = sum(list,d=>d.tunggakanTotal||0) * f;
 
   const ser = (cur,pat)=>pat.map((p,i)=>({ bln:P.months[i], nilai:+(cur*p).toFixed(3) }));
+  const trendOS_raw       = ser(totalOsJt/1000, PAT_OS);
   const delta = (pat)=> (1-pat[4]/pat[5])*100;
 
   // Deduplikasi per CIF: satu debitur bisa punya >1 rekening di LW321
@@ -344,13 +425,18 @@ function buildModel(list, periode) {
     alerts.push({ level:"sedang", tag:"alertOS", text:`${a.pn||""} – ${a.nama} — Estimasi penurunan outstanding RM/Mantri > 15% · OS: ${fJt(a.osJt)}`, time:mkAlertTime(alerts.length) });
   });
 
+  const trendCKPN_raw    = ser(ckpnExisting/1000, PAT_CKPN);
+  const trendTunggakan_raw = ser(tunggakanJt/1000, PAT_TUNGG);
+  const trendData = buildTrendData(periode, trendCKPN_raw, trendTunggakan_raw, trendOS_raw, npl);
+
   return {
     P, totalDeb, totalOsJt, tier, kol, npl, ckpnExisting, ckpnAfter, ckpnSaving, savingPct,
     tunggakanJt, totalTunggakanAll,
-    trendTunggakan: ser(tunggakanJt/1000, PAT_TUNGG),
-    trendCKPN: ser(ckpnExisting/1000, PAT_CKPN),
+    trendTunggakan: trendTunggakan_raw,
+    trendCKPN: trendCKPN_raw,
     trendTunggakan12: ser12(tunggakanJt/1000, PAT_TUNGG_12),
     trendCKPN12: ser12(ckpnExisting/1000, PAT_CKPN_12),
+    trendData,
     deltas:{ os:delta(PAT_OS), deb:delta(PAT_DEB), ckpn:delta(PAT_CKPN) },
     top10, ringkasanEW, perUker, perAO, perSektor, perSegment, alerts, actionPlans, ckpnDebitur,
     realisasiJt, nettDisbursed, realisasiPerUker,
@@ -439,21 +525,34 @@ const RingCard = ({ title, data, total, totalLabel, fmtVal }) => (
     </div>
   </div>
 );
-const TrendChart = ({ data, color=C.kpiBlue }) => {
+const TrendChart = ({ data, color=C.kpiBlue, infoLabel }) => {
   const max = Math.max(...data.map(d=>d.nilai), 1);
   const top = Math.ceil(max*1.25);
+  const CustomDot = ({ cx, cy, payload }) => {
+    if (!cx || !cy) return null;
+    const h = payload?.tipe === "harian";
+    return <circle cx={cx} cy={cy} r={h?2:5} fill={h?color+"99":color} strokeWidth={0} />;
+  };
+  const CustomLabel = ({ x, y, value, index }) => {
+    if (!data[index] || data[index].tipe === "harian") return null;
+    return <text x={x} y={y-7} textAnchor="middle" fontSize={9.5} fill={C.textMd} fontWeight={600}>{fMilV(value)}</text>;
+  };
   return (
-    <ResponsiveContainer width="100%" height={170}>
-      <LineChart data={data} margin={{ top:20, right:16, left:-4, bottom:0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#EEF1F5" vertical={false} />
-        <XAxis dataKey="bln" tick={{ fontSize:10.5, fill:C.gray }} tickLine={false} axisLine={{ stroke:C.border }} />
-        <YAxis tick={{ fontSize:10.5, fill:C.gray }} tickLine={false} axisLine={false} domain={[0,top]} tickFormatter={(v)=>v+" M"} width={42} />
-        <Tooltip formatter={(v)=>[fMilV(v),"Nilai"]} />
-        <Line type="monotone" dataKey="nilai" stroke={color} strokeWidth={2.4} dot={{ r:3, fill:color, strokeWidth:0 }} activeDot={{ r:4 }}>
-          <LabelList dataKey="nilai" position="top" formatter={(v)=>fMilV(v)} style={{ fontSize:9.5, fill:C.textMd, fontWeight:600 }} />
-        </Line>
-      </LineChart>
-    </ResponsiveContainer>
+    <div style={{ position:"relative" }}>
+      {infoLabel && <div style={{ position:"absolute", right:0, top:-2, fontSize:10.5, color:C.gray, fontWeight:500, zIndex:1 }}>{infoLabel}</div>}
+      <ResponsiveContainer width="100%" height={170}>
+        <LineChart data={data} margin={{ top:22, right:16, left:-4, bottom:0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#EEF1F5" vertical={false} />
+          <XAxis dataKey="bln" tick={{ fontSize:9.5, fill:C.gray }} tickLine={false} axisLine={{ stroke:C.border }}
+            interval="preserveStartEnd" />
+          <YAxis tick={{ fontSize:10.5, fill:C.gray }} tickLine={false} axisLine={false} domain={[0,top]} tickFormatter={(v)=>v+" M"} width={42} />
+          <Tooltip formatter={(v)=>[fMilV(v),"Nilai"]} labelFormatter={(l)=>l} />
+          <Line type="monotone" dataKey="nilai" stroke={color} strokeWidth={2} dot={<CustomDot />} activeDot={{ r:5 }}>
+            <LabelList content={<CustomLabel />} />
+          </Line>
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
   );
 };
 const BarH = ({ data, dataKey, nameKey, color=C.kpiBlue, fmt, height }) => (
@@ -518,7 +617,14 @@ function DashboardPinca({ m, go }) {
   const [blnCKPN,  setBlnCKPN]  = useState("6 Bulan");
   const [sortTop10, setSortTop10] = useState("dpd");
   const top10Sorted = [...m.top10].sort((a,b)=> sortTop10==="os" ? b.osJt-a.osJt : b.dpd-a.dpd);
-  const getTrend = (d6, d12, bln) => bln==="3 Bulan" ? d6.slice(-3) : bln==="12 Bulan" ? d12 : d6;
+  const hasBulanIni = m.trendData?.isCurrentMonth;
+  const trendOpts   = hasBulanIni ? ["Bulan Ini","3 Bulan","6 Bulan","12 Bulan"] : ["3 Bulan","6 Bulan","12 Bulan"];
+  const getTrend = (d6, d12, bln, dailyKey) => {
+    if (bln === "Bulan Ini") return (m.trendData[dailyKey] || []).filter(d=>d.tipe==="harian");
+    if (bln === "3 Bulan")   return d6.slice(-3);
+    if (bln === "12 Bulan")  return d12;
+    return d6;
+  };
   const row3      = w >= 1150 ? "1.5fr 1fr 1fr" : "1fr";
   const row4      = w >= 1000 ? "1.3fr 1fr" : "1fr";
   const up = (x)=>(x>=0?"▲ ":"▼ ")+fPct(Math.abs(x),2)+" vs bln lalu";
@@ -563,14 +669,14 @@ function DashboardPinca({ m, go }) {
           </div>
         </div>
         <div style={card}>
-          <CardTitle right={<Select value={blnTungg} onChange={e=>setBlnTungg(e.target.value)} options={["3 Bulan","6 Bulan","12 Bulan"]} />}>Trend Tunggakan (DPD &gt; 0)</CardTitle>
+          <CardTitle right={<Select value={blnTungg} onChange={e=>setBlnTungg(e.target.value)} options={trendOpts} />}>Trend Tunggakan (DPD &gt; 0)</CardTitle>
           <div style={{ fontSize:11, color:C.gray, marginTop:-6, marginBottom:4 }}>(Dalam Miliar Rupiah)</div>
-          <TrendChart data={getTrend(m.trendTunggakan, m.trendTunggakan12, blnTungg)} color={C.kpiRed} />
+          <TrendChart data={getTrend(m.trendTunggakan, m.trendTunggakan12, blnTungg, "trendTunggakan")} color={C.kpiRed} />
         </div>
         <div style={card}>
-          <CardTitle right={<Select value={blnCKPN} onChange={e=>setBlnCKPN(e.target.value)} options={["3 Bulan","6 Bulan","12 Bulan"]} />}>Trend CKPN</CardTitle>
+          <CardTitle right={<Select value={blnCKPN} onChange={e=>setBlnCKPN(e.target.value)} options={trendOpts} />}>Trend CKPN</CardTitle>
           <div style={{ fontSize:11, color:C.gray, marginTop:-6, marginBottom:4 }}>(Dalam Miliar Rupiah)</div>
-          <TrendChart data={getTrend(m.trendCKPN, m.trendCKPN12, blnCKPN)} color={C.kpiBlue} />
+          <TrendChart data={getTrend(m.trendCKPN, m.trendCKPN12, blnCKPN, "trendCKPN")} color={C.kpiBlue} />
         </div>
       </div>
 
@@ -1593,27 +1699,33 @@ function Laporan({ m, list, perms }) {
 
 function Pengaturan({ perms, onUpload, uploadedData, onReset }) {
   const w = useWindowWidth();
-  const [status, setStatus] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState(null);
-  const fileRef = useRef(null);
-  const cols = w >= 900 ? "1fr 1fr" : "1fr";
+  const [uploading,    setUploading]    = useState(false);
+  const [uploadError,  setUploadError]  = useState(null);
+  const [uploadingH,   setUploadingH]   = useState(false);
+  const [uploadErrorH, setUploadErrorH] = useState(null);
+  const [uploadedH,    setUploadedH]    = useState(null);
+  const fileRef  = useRef(null);
+  const fileRefH = useRef(null);
+  const cols    = w >= 900  ? "1fr 1fr" : "1fr";
+  const cols3   = w >= 1200 ? "1fr 1fr 1fr" : w >= 900 ? "1fr 1fr" : "1fr";
   const canEdit = perms?.editData;
 
   const handleUpload = async (file) => {
     if (!file || !canEdit) return;
-    setUploading(true);
-    setUploadError(null);
-    setStatus({ jenis:"lw321", loading:true });
+    setUploading(true); setUploadError(null);
+    try { await onUpload(file); }
+    catch (err) { setUploadError(err.message || 'Gagal membaca file'); }
+    finally { setUploading(false); }
+  };
+
+  const handleUploadH = async (file) => {
+    if (!file || !canEdit) return;
+    setUploadingH(true); setUploadErrorH(null);
     try {
-      await onUpload(file);
-      setStatus(null);
-    } catch (err) {
-      setUploadError(err.message || 'Gagal membaca file');
-      setStatus(null);
-    } finally {
-      setUploading(false);
-    }
+      const result = await parseLW321(file);
+      setUploadedH(result);
+    } catch (err) { setUploadErrorH(err.message || 'Gagal membaca file'); }
+    finally { setUploadingH(false); }
   };
 
   return (
@@ -1679,46 +1791,95 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset }) {
           Total 45 kolom pada file LW321 · Sistem membaca kolom wajib: CIFNO, NAMA_DEBITUR, KODE_UKER, KOL_ADK, BALANCE_IDR, TUNGGAKAN_POKOK, PN_PENGELOLA_1
         </div>
       </div>
-      <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={e=>handleUpload(e.target.files?.[0])} />
-      <div style={{ display:"grid", gridTemplateColumns:cols, gap:12 }}>
-        {/* LW321 — fungsional */}
+      <input ref={fileRef}  type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={e=>handleUpload(e.target.files?.[0])} />
+      <input ref={fileRefH} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={e=>handleUploadH(e.target.files?.[0])} />
+      <div style={{ display:"grid", gridTemplateColumns:cols3, gap:12 }}>
+
+        {/* LW321 — Data Aktif (fungsional) */}
         <div style={{ ...card, padding:20 }}>
-          <div style={{ fontSize:14, fontWeight:600, color:C.navy, marginBottom:4 }}>Import Data LW321 (Core Banking)</div>
-          <div style={{ fontSize:12, color:C.gray, marginBottom:14 }}>Format Excel (.xlsx) · Header di baris ke-4 · Diupdate tiap hari kerja (H+1)</div>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+            <div style={{ width:8, height:8, borderRadius:"50%", background:C.green, flexShrink:0 }} />
+            <div style={{ fontSize:14, fontWeight:600, color:C.navy }}>LW321 — Data Aktif</div>
+          </div>
+          <div style={{ fontSize:12, color:C.gray, marginBottom:14 }}>Upload file LW321 hari ini · Header baris ke-4 · Diupdate tiap hari kerja (H+1)</div>
           {uploadedData ? (
-            <div style={{ padding:"14px", background:C.greenLt, border:`1px solid ${C.green}`, borderRadius:8, marginBottom:12 }}>
-              <div style={{ fontSize:13, fontWeight:700, color:C.green, marginBottom:4 }}>✓ Data Real Aktif</div>
+            <div style={{ padding:"12px 14px", background:C.greenLt, border:`1px solid ${C.green}`, borderRadius:8, marginBottom:12 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:C.green, marginBottom:3 }}>✓ Data Real Aktif</div>
               <div style={{ fontSize:12, color:C.green }}>Periode: {uploadedData.periodeLabel} · {uploadedData.periodeStr}</div>
               <div style={{ fontSize:12, color:C.green }}>{fNum(uploadedData.totalRows)} debitur terbaca</div>
               {uploadedData.datePrinted && <div style={{ fontSize:11, color:C.green, marginTop:2, opacity:.8 }}>Dicetak: {uploadedData.datePrinted}</div>}
             </div>
           ) : (
-            <div
-              onClick={()=>canEdit && fileRef.current?.click()}
-              onDragOver={e=>e.preventDefault()}
+            <div onClick={()=>canEdit && fileRef.current?.click()} onDragOver={e=>e.preventDefault()}
               onDrop={e=>{ e.preventDefault(); handleUpload(e.dataTransfer.files?.[0]); }}
-              style={{ border:`2px dashed ${uploadError?C.red:C.border}`, borderRadius:8, padding:"22px", textAlign:"center", marginBottom:12, color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", gap:6, cursor:canEdit?"pointer":"default", background:canEdit?"transparent":C.grayLt }}>
+              style={{ border:`2px dashed ${uploadError?C.red:C.border}`, borderRadius:8, padding:"22px", textAlign:"center",
+                marginBottom:12, color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center",
+                gap:6, cursor:canEdit?"pointer":"default", background:canEdit?"transparent":C.grayLt }}>
               <Ic n="upload" size={22} />
-              {uploading ? "⏳ Memproses file..." : "Klik atau drag file LW321 (.xlsx) ke sini"}
+              {uploading ? "⏳ Memproses..." : "Klik atau drag file LW321 (.xlsx)"}
             </div>
           )}
           {uploadError && <div style={{ marginBottom:10, padding:"8px 12px", background:C.redLt, border:`1px solid ${C.red}`, borderRadius:7, fontSize:12, color:C.red }}>{uploadError}</div>}
           <div style={{ display:"flex", gap:8 }}>
-            <button onClick={()=>canEdit && fileRef.current?.click()} disabled={!canEdit||uploading} style={{ flex:1, padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7, cursor:canEdit?"pointer":"not-allowed", fontSize:13, fontWeight:500, opacity:canEdit?1:.45 }}>
+            <button onClick={()=>canEdit && fileRef.current?.click()} disabled={!canEdit||uploading}
+              style={{ flex:1, padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7,
+                cursor:canEdit?"pointer":"not-allowed", fontSize:13, fontWeight:500, opacity:canEdit?1:.45 }}>
               {uploading ? "Memproses..." : uploadedData ? "Upload Ulang" : "Upload & Proses"}
             </button>
             {uploadedData && <button onClick={onReset} style={{ padding:"9px 14px", background:C.white, color:C.red, border:`1px solid ${C.red}`, borderRadius:7, cursor:"pointer", fontSize:13 }}>Reset</button>}
           </div>
         </div>
+
+        {/* LW321 — Snapshot Historis (fungsional, state lokal) */}
+        <div style={{ ...card, padding:20 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+            <div style={{ width:8, height:8, borderRadius:"50%", background:C.kpiBlue, flexShrink:0 }} />
+            <div style={{ fontSize:14, fontWeight:600, color:C.navy }}>LW321 — Snapshot Historis</div>
+          </div>
+          <div style={{ fontSize:12, color:C.gray, marginBottom:14 }}>Upload file LW321 periode sebelumnya untuk mengisi data trend bulanan</div>
+          {uploadedH ? (
+            <div style={{ padding:"12px 14px", background:C.navyLt, border:`1px solid ${C.navy}40`, borderRadius:8, marginBottom:12 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:C.navy, marginBottom:3 }}>✓ Snapshot Tersimpan</div>
+              <div style={{ fontSize:12, color:C.navy }}>Periode: {uploadedH.periodeLabel} · {uploadedH.periodeStr}</div>
+              <div style={{ fontSize:12, color:C.navy }}>{fNum(uploadedH.totalRows)} debitur terbaca</div>
+              {uploadedH.datePrinted && <div style={{ fontSize:11, color:C.navy, marginTop:2, opacity:.7 }}>Dicetak: {uploadedH.datePrinted}</div>}
+            </div>
+          ) : (
+            <div onClick={()=>canEdit && fileRefH.current?.click()} onDragOver={e=>e.preventDefault()}
+              onDrop={e=>{ e.preventDefault(); handleUploadH(e.dataTransfer.files?.[0]); }}
+              style={{ border:`2px dashed ${uploadErrorH?C.red:C.border}`, borderRadius:8, padding:"22px", textAlign:"center",
+                marginBottom:12, color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center",
+                gap:6, cursor:canEdit?"pointer":"default", background:canEdit?"transparent":C.grayLt }}>
+              <Ic n="upload" size={22} />
+              {uploadingH ? "⏳ Memproses..." : "Klik atau drag file LW321 (.xlsx)"}
+            </div>
+          )}
+          {uploadErrorH && <div style={{ marginBottom:10, padding:"8px 12px", background:C.redLt, border:`1px solid ${C.red}`, borderRadius:7, fontSize:12, color:C.red }}>{uploadErrorH}</div>}
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={()=>canEdit && fileRefH.current?.click()} disabled={!canEdit||uploadingH}
+              style={{ flex:1, padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7,
+                cursor:canEdit?"pointer":"not-allowed", fontSize:13, fontWeight:500, opacity:canEdit?1:.45 }}>
+              {uploadingH ? "Memproses..." : uploadedH ? "Upload Ulang" : "Upload & Proses"}
+            </button>
+            {uploadedH && <button onClick={()=>setUploadedH(null)} style={{ padding:"9px 14px", background:C.white, color:C.red, border:`1px solid ${C.red}`, borderRadius:7, cursor:"pointer", fontSize:13 }}>Reset</button>}
+          </div>
+        </div>
+
         {/* CKPN — masih mock */}
         <div style={{ ...card, padding:20 }}>
-          <div style={{ fontSize:14, fontWeight:600, color:C.navy, marginBottom:4 }}>Import CKPN per Unit Kerja</div>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+            <div style={{ width:8, height:8, borderRadius:"50%", background:C.kpiPurple, flexShrink:0 }} />
+            <div style={{ fontSize:14, fontWeight:600, color:C.navy }}>Import CKPN per Unit Kerja</div>
+          </div>
           <div style={{ fontSize:12, color:C.gray, marginBottom:14 }}>Format Excel (.xlsx) / CSV. Kolom: KODE_UKER, PERIODE, CKPN_EXISTING, CKPN_POTENSIAL, COVERAGE_RATIO.</div>
-          <div style={{ border:`2px dashed ${C.border}`, borderRadius:8, padding:"22px", textAlign:"center", marginBottom:12, color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", gap:6 }}>
+          <div style={{ border:`2px dashed ${C.border}`, borderRadius:8, padding:"22px", textAlign:"center", marginBottom:12,
+            color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", gap:6, background:C.grayLt }}>
             <Ic n="upload" size={22} /> Klik atau drag file Excel/CSV ke sini
           </div>
-          <button disabled style={{ width:"100%", padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7, cursor:"not-allowed", fontSize:13, fontWeight:500, opacity:.45 }}>Segera Hadir</button>
+          <button disabled style={{ width:"100%", padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7,
+            cursor:"not-allowed", fontSize:13, fontWeight:500, opacity:.45 }}>Segera Hadir</button>
         </div>
+
       </div>
     </div>
   );
