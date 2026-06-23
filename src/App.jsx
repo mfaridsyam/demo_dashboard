@@ -2638,16 +2638,27 @@ export default function App() {
     setDbLoading(true); setDbProgress(0);
     setDbProgressLabel("Menghubungkan ke database...");
     try {
-      const { data: allUploads } = await supabase
+      // Query utama — hanya kolom yang pasti ada
+      const { data: allUploads, error: upErr } = await supabase
         .from('uploads')
-        .select('id, tgl_file, periode_label, row_count, total_os_jt, total_tunggakan_jt')
+        .select('id, tgl_file, periode_label, row_count')
         .eq('jenis', 'lw321').order('tgl_file', { ascending: false });
-      if (!allUploads?.length) return;
+      if (upErr || !allUploads?.length) return;
       setAvailablePeriodes(allUploads);
-      const uploadHistory = [...allUploads]
-        .filter(u => u.total_os_jt != null)
-        .sort((a,b) => a.tgl_file.localeCompare(b.tgl_file))
-        .map(u => ({ periodeLabel: u.periode_label, totalOsJt: u.total_os_jt, totalTunggakanJt: u.total_tunggakan_jt }));
+
+      // Query opsional — trend data (gagal diam-diam kalau kolom belum dibuat)
+      let uploadHistory = [];
+      const { data: withTotals } = await supabase
+        .from('uploads')
+        .select('id, tgl_file, periode_label, total_os_jt, total_tunggakan_jt')
+        .eq('jenis', 'lw321').order('tgl_file', { ascending: true });
+      if (withTotals) {
+        const valid = withTotals.filter(u => u.total_os_jt != null);
+        if (valid.length >= 2) {
+          uploadHistory = valid.map(u => ({ periodeLabel: u.periode_label, totalOsJt: u.total_os_jt, totalTunggakanJt: u.total_tunggakan_jt }));
+        }
+      }
+
       await loadDebiturForUpload(allUploads[0], uploadHistory);
     } catch (err) {
       console.error('Gagal load data dari database:', err);
@@ -2661,10 +2672,8 @@ export default function App() {
     setPeriodeOpen(false);
     setDbLoading(true); setDbProgress(0);
     try {
-      const uploadHistory = availablePeriodes
-        .filter(u => u.total_os_jt != null)
-        .sort((a,b) => a.tgl_file.localeCompare(b.tgl_file))
-        .map(u => ({ periodeLabel: u.periode_label, totalOsJt: u.total_os_jt, totalTunggakanJt: u.total_tunggakan_jt }));
+      // Pakai uploadHistory yang sudah ada di state saat ini
+      const uploadHistory = uploadedData?.uploadHistory || [];
       await loadDebiturForUpload(upload, uploadHistory);
     } catch (err) {
       console.error('Gagal ganti periode:', err);
