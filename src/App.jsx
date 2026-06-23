@@ -1702,12 +1702,12 @@ function KinerjaUnit({ m, list }) {
         <div style={{ display:"grid", gridTemplateColumns: w>=1000?"1fr 1fr":"1fr", gap:12 }}>
           <div style={card}>
             <CardTitle>Outstanding per RM/Mantri</CardTitle>
-            <BarH data={sortedMantri.filter(a=>a.key!=="__none__")} dataKey="osJt" nameKey="nama" color={C.kpiTeal} fmt={(v)=>fMilV(v/1000)}
+            <BarH data={[...sortedMantri.filter(a=>a.key!=="__none__"&&a.osJt>0)].sort((a,b)=>b.osJt-a.osJt)} dataKey="osJt" nameKey="nama" color={C.kpiTeal} fmt={(v)=>fMilV(v/1000)}
               onBarClick={entry=>{ const a=mantriList.find(x=>x.nama===entry.nama); if(a) setSelAO(a.key); }} />
           </div>
           <div style={card}>
             <CardTitle>Debitur Risiko Tinggi per RM/Mantri</CardTitle>
-            <BarH data={[...sortedMantri.filter(a=>a.key!=="__none__")].sort((a,b)=>b.tinggi-a.tinggi)} dataKey="tinggi" nameKey="nama" color={C.kpiRed} fmt={fNum}
+            <BarH data={[...sortedMantri.filter(a=>a.key!=="__none__"&&a.tinggi>0)].sort((a,b)=>b.tinggi-a.tinggi)} dataKey="tinggi" nameKey="nama" color={C.kpiRed} fmt={fNum}
               onBarClick={entry=>{ const a=mantriList.find(x=>x.nama===entry.nama); if(a) setSelAO(a.key); }} />
           </div>
         </div>
@@ -1964,35 +1964,63 @@ function Laporan({ m, list, perms }) {
   );
 }
 
-function Pengaturan({ perms, onUpload, uploadedData, onReset }) {
+function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
   const w = useWindowWidth();
-  const [uploading,    setUploading]    = useState(false);
-  const [uploadError,  setUploadError]  = useState(null);
-  const [uploadingH,   setUploadingH]   = useState(false);
-  const [uploadErrorH, setUploadErrorH] = useState(null);
-  const [uploadedH,    setUploadedH]    = useState(null);
-  const fileRef  = useRef(null);
-  const fileRefH = useRef(null);
-  const cols    = w >= 900  ? "1fr 1fr" : "1fr";
-  const cols3   = w >= 1200 ? "1fr 1fr 1fr" : w >= 900 ? "1fr 1fr" : "1fr";
-  const canEdit = perms?.editData;
+  const [uploading,      setUploading]      = useState(false);
+  const [uploadError,    setUploadError]    = useState(null);
+  const [pendingFile,    setPendingFile]    = useState(null);
+  const [uploadPct,      setUploadPct]      = useState(0);
+  const [uploadPctLabel, setUploadPctLabel] = useState("");
+  const yesterday = () => { const d = new Date(); d.setDate(d.getDate()-1); return d.toISOString().split('T')[0]; };
+  const [fileTanggal, setFileTanggal] = useState(yesterday);
+  const [history,     setHistory]     = useState([]);
+  const [histLoading, setHistLoading] = useState(false);
+  const [deletingId,  setDeletingId]  = useState(null);
+  const fileRef = useRef(null);
 
-  const handleUpload = async (file) => {
-    if (!file || !canEdit) return;
-    setUploading(true); setUploadError(null);
-    try { await onUpload(file); }
-    catch (err) { setUploadError(err.message || 'Gagal membaca file'); }
-    finally { setUploading(false); }
+  const loadHistory = async () => {
+    setHistLoading(true);
+    try {
+      const { data } = await supabase.from('uploads').select('*').order('created_at', { ascending: false });
+      setHistory(data || []);
+    } finally { setHistLoading(false); }
   };
 
-  const handleUploadH = async (file) => {
-    if (!file || !canEdit) return;
-    setUploadingH(true); setUploadErrorH(null);
+  useEffect(() => { loadHistory(); }, []);
+
+  const handleDelete = async (up) => {
+    if (!window.confirm(`Hapus upload "${up.periode_label}" (${Number(up.row_count).toLocaleString("id-ID")} debitur)?\n\nSemua data debitur dari upload ini akan ikut terhapus.`)) return;
+    setDeletingId(up.id);
     try {
-      const result = await parseLW321(file);
-      setUploadedH(result);
-    } catch (err) { setUploadErrorH(err.message || 'Gagal membaca file'); }
-    finally { setUploadingH(false); }
+      await supabase.from('uploads').delete().eq('id', up.id);
+      await loadHistory();
+      if (onDataChanged) await onDataChanged();
+    } finally { setDeletingId(null); }
+  };
+  const cols  = w >= 900  ? "1fr 1fr" : "1fr";
+  const cols3 = w >= 1200 ? "1fr 1fr 1fr" : w >= 900 ? "1fr 1fr" : "1fr";
+  const canEdit = perms?.editData;
+
+  const handleFileSelect = (file) => {
+    if (!file || !canEdit) return;
+    setPendingFile(file);
+    setUploadError(null);
+  };
+
+  const handleUpload = async () => {
+    if (!pendingFile || !canEdit) return;
+    setUploading(true); setUploadError(null); setUploadPct(0); setUploadPctLabel("");
+    try {
+      await onUpload(pendingFile, fileTanggal, (pct, label) => {
+        setUploadPct(pct);
+        setUploadPctLabel(label);
+      });
+      setPendingFile(null);
+      setUploadPct(0);
+      await loadHistory();
+    }
+    catch (err) { setUploadError(err.message || 'Gagal membaca file'); }
+    finally { setUploading(false); }
   };
 
   return (
@@ -2023,112 +2051,53 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset }) {
           </div>
         </div>
       </div>
-      <div style={{ ...card, padding:0, overflow:"hidden" }}>
-        <div style={{ padding:"14px 16px 8px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <div style={{ fontSize:12.5, fontWeight:700, color:"#1F2937", letterSpacing:.3, textTransform:"uppercase" }}>Contoh Format Data LW321</div>
-          <span style={{ fontSize:11, color:C.gray, fontStyle:"italic" }}>Kolom utama yang dibaca sistem</span>
-        </div>
-        <div style={{ overflowX:"auto" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11.5, tableLayout:"auto" }}>
-            <thead>
-              <tr style={{ background:C.grayLt }}>
-                {["CIFNO","NAMA_DEBITUR","KODE_UKER","UKER","KOL_ADK","PLAFON","BALANCE_IDR","TUNGGAKAN_POKOK","TUNGGAKAN_BUNGA","TGL_MENUNGGAK","PN_PENGELOLA_1","SEGMEN_LV1"].map((h,i)=>(
-                  <th key={i} style={{ padding:"7px 10px", color:C.gray, fontWeight:600, fontSize:10, textTransform:"uppercase", textAlign:"left", whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}` }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                ["SP55434","SUBARKAM","259","KC Polewali","1","150000000","36498414","0","0","-","00157966 – Dini Dewi Buawati","RITEL"],
-                ["PCH0960","PEBRIANTO PATULAK","259","KC Polewali","1","70000000","31914971","0","0","-","00157966 – Dini Dewi Buawati","RITEL"],
-                ["SX63095","SULTAN","259","KC Polewali","2","13000000","4000000","4000000","947590","11/04/2008","00056207 – Wahyuni","RITEL"],
-                ["L184879","LSM PEMA SIDODADI","259","KC Polewali","3","6725231315","2305268181","2305268181","0","13/01/2000","00030487 – Subadri","RITEL"],
-                ["MD72183","MALAHAYATI SAPRIWALI","259","KC Polewali","4","95000000","25985177","9619223","2143777","16/07/2008","00125634 – Nurfaida","RITEL"],
-              ].map((row,ri)=>(
-                <tr key={ri} style={{ background: ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6` }}>
-                  {row.map((cell,ci)=>(
-                    <td key={ci} style={{ padding:"6px 10px", color: ci===4?(cell==="1"?C.green:cell==="2"?C.amber:cell==="3"||cell==="4"?C.red:C.textMd):C.textMd, fontWeight:ci===4?700:400, whiteSpace:"nowrap" }}>{cell}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ padding:"10px 16px", borderTop:`1px solid ${C.border}`, fontSize:11, color:C.gray }}>
-          Total 45 kolom pada file LW321 · Sistem membaca kolom wajib: CIFNO, NAMA_DEBITUR, KODE_UKER, KOL_ADK, BALANCE_IDR, TUNGGAKAN_POKOK, PN_PENGELOLA_1
-        </div>
-      </div>
-      <input ref={fileRef}  type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={e=>handleUpload(e.target.files?.[0])} />
-      <input ref={fileRefH} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={e=>handleUploadH(e.target.files?.[0])} />
+      <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={e=>handleFileSelect(e.target.files?.[0])} />
       <div style={{ display:"grid", gridTemplateColumns:cols3, gap:12 }}>
 
-        {/* LW321 — Data Aktif (fungsional) */}
+        {/* LW321 — Data Aktif */}
         <div style={{ ...card, padding:20 }}>
           <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
             <div style={{ width:8, height:8, borderRadius:"50%", background:C.green, flexShrink:0 }} />
             <div style={{ fontSize:14, fontWeight:600, color:C.navy }}>LW321 — Data Aktif</div>
           </div>
-          <div style={{ fontSize:12, color:C.gray, marginBottom:14 }}>Upload file LW321 harian · Header baris ke-4 · Diupdate setiap hari kerja (H+1)</div>
-          {uploadedData ? (
-            <div style={{ padding:"12px 14px", background:C.greenLt, border:`1px solid ${C.green}`, borderRadius:8, marginBottom:12 }}>
-              <div style={{ fontSize:13, fontWeight:700, color:C.green, marginBottom:3 }}>✓ Data Real Aktif</div>
-              <div style={{ fontSize:12, color:C.green }}>Periode: {uploadedData.periodeLabel} · {uploadedData.periodeStr}</div>
-              <div style={{ fontSize:12, color:C.green }}>{fNum(uploadedData.totalRows)} debitur terbaca</div>
-              {uploadedData.datePrinted && <div style={{ fontSize:11, color:C.green, marginTop:2, opacity:.8 }}>Dicetak: {uploadedData.datePrinted}</div>}
+          <div style={{ fontSize:12, color:C.gray, marginBottom:12 }}>Upload file LW321 harian · Header baris ke-4 · Data tersedia H+1</div>
+
+          {/* Date picker */}
+          <div style={{ marginBottom:12 }}>
+            <label style={{ fontSize:11.5, fontWeight:600, color:C.textMd, display:"block", marginBottom:5 }}>Tanggal Data File</label>
+            <input type="date" value={fileTanggal} onChange={e=>setFileTanggal(e.target.value)} disabled={!canEdit}
+              style={{ width:"100%", padding:"8px 10px", border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13,
+                color:C.text, background:canEdit?C.white:C.grayLt, boxSizing:"border-box", outline:"none" }} />
+            <div style={{ fontSize:11, color:C.gray, marginTop:4 }}>Pilih tanggal data di dalam file (bukan tanggal upload)</div>
+          </div>
+
+          {uploading ? (
+            <div style={{ marginBottom:10 }}>
+              <div style={{ fontSize:12, color:C.textMd, marginBottom:6 }}>{uploadPctLabel || "Memproses..."}</div>
+              <div style={{ background:C.border, borderRadius:99, height:10, overflow:"hidden", marginBottom:5 }}>
+                <div style={{ height:"100%", borderRadius:99, background:C.navy, width:`${uploadPct}%`, transition:"width 0.25s ease" }} />
+              </div>
+              <div style={{ fontSize:12, fontWeight:700, color:C.navy, textAlign:"right" }}>{uploadPct}%</div>
             </div>
           ) : (
             <div onClick={()=>canEdit && fileRef.current?.click()} onDragOver={e=>e.preventDefault()}
-              onDrop={e=>{ e.preventDefault(); handleUpload(e.dataTransfer.files?.[0]); }}
-              style={{ border:`2px dashed ${uploadError?C.red:C.border}`, borderRadius:8, padding:"22px", textAlign:"center",
-                marginBottom:12, color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center",
-                gap:6, cursor:canEdit?"pointer":"default", background:canEdit?"transparent":C.grayLt }}>
-              <Ic n="upload" size={22} />
-              {uploading ? "⏳ Memproses..." : "Klik atau drag file LW321 (.xlsx)"}
+              onDrop={e=>{ e.preventDefault(); handleFileSelect(e.dataTransfer.files?.[0]); }}
+              style={{ border:`2px dashed ${pendingFile?C.navy:uploadError?C.red:C.border}`, borderRadius:8, padding:"16px", textAlign:"center",
+                marginBottom:10, color:pendingFile?C.navy:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center",
+                gap:5, cursor:canEdit?"pointer":"default", background:pendingFile?C.navyLt:canEdit?"transparent":C.grayLt }}>
+              <Ic n={pendingFile?"doc":"upload"} size={20} />
+              {pendingFile ? pendingFile.name : uploadedData ? "Drag atau klik untuk pilih file baru" : "Klik atau drag file LW321 (.xlsx)"}
             </div>
           )}
           {uploadError && <div style={{ marginBottom:10, padding:"8px 12px", background:C.redLt, border:`1px solid ${C.red}`, borderRadius:7, fontSize:12, color:C.red }}>{uploadError}</div>}
           <div style={{ display:"flex", gap:8 }}>
-            <button onClick={()=>canEdit && fileRef.current?.click()} disabled={!canEdit||uploading}
+            <button onClick={handleUpload} disabled={!canEdit||uploading||!pendingFile}
               style={{ flex:1, padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7,
-                cursor:canEdit?"pointer":"not-allowed", fontSize:13, fontWeight:500, opacity:canEdit?1:.45 }}>
-              {uploading ? "Memproses..." : uploadedData ? "Upload Ulang" : "Upload & Proses"}
+                cursor:(canEdit&&pendingFile&&!uploading)?"pointer":"not-allowed", fontSize:13, fontWeight:500,
+                opacity:(canEdit&&pendingFile&&!uploading)?1:.45 }}>
+              {uploading ? "Memproses..." : "Upload & Proses"}
             </button>
-            {uploadedData && <button onClick={onReset} style={{ padding:"9px 14px", background:C.white, color:C.red, border:`1px solid ${C.red}`, borderRadius:7, cursor:"pointer", fontSize:13 }}>Reset</button>}
-          </div>
-        </div>
-
-        {/* LW321 — Snapshot Historis (fungsional, state lokal) */}
-        <div style={{ ...card, padding:20 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-            <div style={{ width:8, height:8, borderRadius:"50%", background:C.kpiBlue, flexShrink:0 }} />
-            <div style={{ fontSize:14, fontWeight:600, color:C.navy }}>LW321 — Snapshot Historis</div>
-          </div>
-          <div style={{ fontSize:12, color:C.gray, marginBottom:14 }}>Upload file LW321 periode sebelumnya untuk mengisi data trend bulanan</div>
-          {uploadedH ? (
-            <div style={{ padding:"12px 14px", background:C.navyLt, border:`1px solid ${C.navy}40`, borderRadius:8, marginBottom:12 }}>
-              <div style={{ fontSize:13, fontWeight:700, color:C.navy, marginBottom:3 }}>✓ Snapshot Tersimpan</div>
-              <div style={{ fontSize:12, color:C.navy }}>Periode: {uploadedH.periodeLabel} · {uploadedH.periodeStr}</div>
-              <div style={{ fontSize:12, color:C.navy }}>{fNum(uploadedH.totalRows)} debitur terbaca</div>
-              {uploadedH.datePrinted && <div style={{ fontSize:11, color:C.navy, marginTop:2, opacity:.7 }}>Dicetak: {uploadedH.datePrinted}</div>}
-            </div>
-          ) : (
-            <div onClick={()=>canEdit && fileRefH.current?.click()} onDragOver={e=>e.preventDefault()}
-              onDrop={e=>{ e.preventDefault(); handleUploadH(e.dataTransfer.files?.[0]); }}
-              style={{ border:`2px dashed ${uploadErrorH?C.red:C.border}`, borderRadius:8, padding:"22px", textAlign:"center",
-                marginBottom:12, color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center",
-                gap:6, cursor:canEdit?"pointer":"default", background:canEdit?"transparent":C.grayLt }}>
-              <Ic n="upload" size={22} />
-              {uploadingH ? "⏳ Memproses..." : "Klik atau drag file LW321 (.xlsx)"}
-            </div>
-          )}
-          {uploadErrorH && <div style={{ marginBottom:10, padding:"8px 12px", background:C.redLt, border:`1px solid ${C.red}`, borderRadius:7, fontSize:12, color:C.red }}>{uploadErrorH}</div>}
-          <div style={{ display:"flex", gap:8 }}>
-            <button onClick={()=>canEdit && fileRefH.current?.click()} disabled={!canEdit||uploadingH}
-              style={{ flex:1, padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7,
-                cursor:canEdit?"pointer":"not-allowed", fontSize:13, fontWeight:500, opacity:canEdit?1:.45 }}>
-              {uploadingH ? "Memproses..." : uploadedH ? "Upload Ulang" : "Upload & Proses"}
-            </button>
-            {uploadedH && <button onClick={()=>setUploadedH(null)} style={{ padding:"9px 14px", background:C.white, color:C.red, border:`1px solid ${C.red}`, borderRadius:7, cursor:"pointer", fontSize:13 }}>Reset</button>}
+            {pendingFile && <button onClick={()=>{ setPendingFile(null); setUploadError(null); }} style={{ padding:"9px 14px", background:C.white, color:C.gray, border:`1px solid ${C.border}`, borderRadius:7, cursor:"pointer", fontSize:13 }}>Batal</button>}
           </div>
         </div>
 
@@ -2148,6 +2117,69 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset }) {
         </div>
 
       </div>
+
+      {/* Riwayat Upload */}
+      {canEdit && (
+        <div style={{ ...card, padding:0, overflow:"hidden" }}>
+          <div style={{ padding:"14px 16px", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${C.border}` }}>
+            <div style={{ fontSize:13, fontWeight:700, color:C.navy, textTransform:"uppercase", letterSpacing:.3 }}>Riwayat Upload Database</div>
+            <button onClick={loadHistory} style={{ fontSize:12, color:C.gray, background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"4px 10px", cursor:"pointer" }}>
+              {histLoading ? "Memuat..." : "Refresh"}
+            </button>
+          </div>
+          {histLoading && !history.length ? (
+            <div style={{ padding:"24px", textAlign:"center", color:C.gray, fontSize:13 }}>Memuat riwayat...</div>
+          ) : !history.length ? (
+            <div style={{ padding:"24px", textAlign:"center", color:C.gray, fontSize:13 }}>Belum ada data upload</div>
+          ) : (
+            <div style={{ overflowX:"auto" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
+                <thead>
+                  <tr style={{ background:C.grayLt }}>
+                    {["Jenis","Tanggal Data","Periode","Jumlah Debitur","Diupload Oleh","Waktu Upload",""].map((h,i)=>(
+                      <th key={i} style={{ padding:"9px 14px", color:C.gray, fontWeight:600, fontSize:11, textTransform:"uppercase",
+                        textAlign:i===5||i===3?"right":"left", whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}` }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const latestTgl = {};
+                    history.forEach(up => {
+                      if (!latestTgl[up.jenis] || up.tgl_file > latestTgl[up.jenis]) latestTgl[up.jenis] = up.tgl_file;
+                    });
+                    return history.map((up, i) => {
+                      const isActive = latestTgl[up.jenis] === up.tgl_file;
+                      return (
+                        <tr key={up.id} style={{ background: i%2===0?C.white:C.grayLt, borderBottom:`1px solid ${C.border}` }}>
+                          <td style={{ padding:"10px 14px", fontWeight:600, color:C.navy, textTransform:"uppercase", fontSize:12 }}>
+                            {up.jenis}
+                            {isActive && <span style={{ marginLeft:6, fontSize:10, background:C.greenLt, color:C.green, border:`1px solid ${C.green}`, borderRadius:4, padding:"1px 5px" }}>Aktif</span>}
+                          </td>
+                          <td style={{ padding:"10px 14px", color:C.text }}>{up.tgl_file}</td>
+                          <td style={{ padding:"10px 14px", color:C.text }}>{up.periode_label}</td>
+                          <td style={{ padding:"10px 14px", color:C.text, textAlign:"right" }}>{Number(up.row_count).toLocaleString("id-ID")}</td>
+                          <td style={{ padding:"10px 14px", color:C.gray, fontFamily:"monospace", fontSize:12 }}>{up.uploaded_by || "-"}</td>
+                          <td style={{ padding:"10px 14px", color:C.gray, textAlign:"right", fontSize:12 }}>
+                            {new Date(up.created_at).toLocaleString("id-ID",{ dateStyle:"short", timeStyle:"short" })}
+                          </td>
+                          <td style={{ padding:"10px 14px", textAlign:"center" }}>
+                            <button onClick={()=>handleDelete(up)} disabled={deletingId===up.id}
+                              style={{ padding:"5px 12px", background:C.redLt, color:C.red, border:`1px solid ${C.red}`,
+                                borderRadius:6, fontSize:12, cursor:"pointer", fontWeight:500, opacity:deletingId===up.id?.5:1 }}>
+                              {deletingId===up.id ? "Menghapus..." : "Hapus"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    });
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2511,28 +2543,57 @@ export default function App() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [uploadedData, setUploadedData] = useState(null);
-  const [dbLoading, setDbLoading] = useState(true);
+  const [dbLoading, setDbLoading] = useState(false);
+  const [dbProgress, setDbProgress] = useState(0);
+  const [dbProgressLabel, setDbProgressLabel] = useState("");
   const [localUsers, setLocalUsers] = useState(USERS);
 
   const loadLatestData = async () => {
+    setDbLoading(true);
+    setDbProgress(0);
+    setDbProgressLabel("Menghubungkan ke database...");
     try {
       const { data: uploads } = await supabase
         .from('uploads')
         .select('*')
         .eq('jenis', 'lw321')
-        .order('created_at', { ascending: false })
+        .order('tgl_file', { ascending: false })
         .limit(1);
 
       if (!uploads?.length) return;
       const upload = uploads[0];
+      const totalRows = upload.row_count || 0;
 
-      const { data: rows } = await supabase
-        .from('debitur')
-        .select('*')
-        .eq('upload_id', upload.id)
-        .limit(5000);
+      setDbProgressLabel(`Memuat data ${upload.periode_label}...`);
 
-      if (!rows?.length) return;
+      // Ambil semua baris dengan pagination + progress
+      const PAGE = 1000;
+      let allRows = [];
+      let page = 0;
+      let hasMore = true;
+      while (hasMore) {
+        const from = page * PAGE;
+        const { data: rows, error } = await supabase
+          .from('debitur')
+          .select('*')
+          .eq('upload_id', upload.id)
+          .range(from, from + PAGE - 1);
+        if (error) throw error;
+        if (!rows?.length) { hasMore = false; break; }
+        allRows = allRows.concat(rows);
+        hasMore = rows.length === PAGE;
+        page++;
+        if (totalRows > 0) {
+          const pct = Math.min(98, Math.round(allRows.length / totalRows * 100));
+          setDbProgress(pct);
+          setDbProgressLabel(`Memuat data... ${allRows.length.toLocaleString("id-ID")} dari ${totalRows.toLocaleString("id-ID")} debitur`);
+        }
+      }
+
+      setDbProgress(100);
+      setDbProgressLabel("Selesai");
+      if (!allRows.length) return;
+      const rows = allRows;
 
       const debitur = rows.map(r => ({
         cif: r.cif, nama: r.nama, ao: r.ao, aoId: r.ao_id, pn: r.pn,
@@ -2559,18 +2620,19 @@ export default function App() {
     }
   };
 
-  useEffect(() => { loadLatestData(); }, []);
 
-  const handleUploadFile = async (file) => {
+  const handleUploadFile = async (file, tglData, onProgress) => {
     if (!file) return;
+    onProgress?.(3, "Membaca file Excel...");
     const result = await parseLW321(file);
 
     try {
+      onProgress?.(8, "Menyimpan metadata upload...");
       const { data: upload, error: upErr } = await supabase
         .from('uploads')
         .insert({
           jenis: 'lw321',
-          tgl_file: new Date().toISOString().split('T')[0],
+          tgl_file: tglData || new Date().toISOString().split('T')[0],
           periode_label: result.periodeLabel,
           periode_str: result.periodeStr,
           date_printed: result.datePrinted,
@@ -2597,7 +2659,11 @@ export default function App() {
       for (let i = 0; i < rows.length; i += CHUNK) {
         const { error } = await supabase.from('debitur').insert(rows.slice(i, i + CHUNK));
         if (error) throw error;
+        const saved = Math.min(i + CHUNK, rows.length);
+        const pct = 10 + Math.round(saved / rows.length * 88);
+        onProgress?.(pct, `Menyimpan ${saved.toLocaleString("id-ID")} dari ${rows.length.toLocaleString("id-ID")} debitur...`);
       }
+      onProgress?.(100, "Selesai!");
     } catch (err) {
       console.error('Gagal simpan ke database:', err);
     }
@@ -2625,21 +2691,29 @@ export default function App() {
 
   const handleLogin = (user) => {
     setCurrentUser(user); setRole(user.role); setPage("dashboard"); setProfileOpen(false);
-    if (user.role==="ao")         setFilters({ uker:user.uker||"semua", ao:user.aoId||"semua", segment:"semua", periode:"Mei 2026" });
-    else if (user.uker)           setFilters({ uker:user.uker, ao:"semua", segment:"semua", periode:"Mei 2026" });
-    else                          setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" });
+    setDbLoading(true); setDbProgress(0);
+    if (user.role==="ao")         setFilters({ uker:user.uker||"semua", ao:user.aoId||"semua", segment:"semua", periode:"Jun 2026" });
+    else if (user.uker)           setFilters({ uker:user.uker, ao:"semua", segment:"semua", periode:"Jun 2026" });
+    else                          setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Jun 2026" });
+    loadLatestData();
   };
   const handleLogout = () => { setCurrentUser(null); setRole(null); setPage("dashboard"); setProfileOpen(false); setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" }); };
 
+  if (!perms) return <Login onLogin={handleLogin} localUsers={localUsers} />;
+
   if (dbLoading) return (
-    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100vh", background:C.bg, gap:16 }}>
-      <div style={{ width:40, height:40, border:`4px solid ${C.border}`, borderTop:`4px solid ${C.navy}`, borderRadius:"50%", animation:"spin 1s linear infinite" }} />
-      <div style={{ fontSize:14, color:C.gray }}>Memuat data dari database...</div>
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100vh", background:C.bg, gap:20 }}>
+      <div style={{ textAlign:"center", marginBottom:4 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:C.navy, marginBottom:4 }}>EWS-CKPN</div>
+        <div style={{ fontSize:12.5, color:C.gray }}>{dbProgressLabel || "Memuat data dari database..."}</div>
+      </div>
+      <div style={{ width:320, background:C.border, borderRadius:99, height:8, overflow:"hidden" }}>
+        <div style={{ height:"100%", borderRadius:99, background:C.navy, width:`${dbProgress}%`, transition:"width 0.3s ease" }} />
+      </div>
+      <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>{dbProgress}%</div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
-
-  if (!perms) return <Login onLogin={handleLogin} localUsers={localUsers} />;
 
   const menus = MENU.filter(x=>perms.menus.includes(x.id));
   const safePage = perms.menus.includes(page) ? page : "dashboard";
@@ -2657,7 +2731,7 @@ export default function App() {
     kinerjaUnit: <KinerjaUnit m={m} list={list} />,
     laporan:     <Laporan m={m} list={list} perms={perms} />,
     manajemen:   <ManajemenUser localUsers={localUsers} setLocalUsers={setLocalUsers} />,
-    pengaturan:  <Pengaturan perms={perms} onUpload={handleUploadFile} uploadedData={uploadedData} onReset={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Mei 2026"})); }} />,
+    pengaturan:  <Pengaturan perms={perms} onUpload={handleUploadFile} uploadedData={uploadedData} onReset={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Jun 2026"})); }} onDataChanged={loadLatestData} />,
   };
   const aktifFilter = perms.scope==="all" && (filters.uker!=="semua" || filters.segment!=="semua" || filters.ao!=="semua");
 
@@ -2677,13 +2751,6 @@ export default function App() {
             </div>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-            {uploadedData && (
-              <div style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 10px", background:C.greenLt, border:`1px solid ${C.green}`, borderRadius:7 }}>
-                <Ic n="check" size={14} style={{ color:C.green }} />
-                <span style={{ fontSize:11.5, color:C.green, fontWeight:600 }}>Data Real · {uploadedData.periodeStr}</span>
-                <button onClick={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Mei 2026"})); }} style={{ marginLeft:4, background:"none", border:"none", color:C.green, cursor:"pointer", fontSize:13, lineHeight:1, padding:0 }} title="Reset ke data mock">✕</button>
-              </div>
-            )}
             <button onClick={()=>setInfoOpen(true)} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 12px", border:`1px solid ${C.border}`, borderRadius:7, background:C.white, color:C.textMd, fontSize:12.5, cursor:"pointer" }}><Ic n="infoDoc" size={15} /> Info Data</button>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span style={{ fontSize:12.5, color:C.gray }}>Periode</span>
