@@ -2572,92 +2572,102 @@ export default function App() {
   const [page, setPage] = useState("dashboard");
   const [filters, setFilters] = useState({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" });
   const [profileOpen, setProfileOpen] = useState(false);
+  const [periodeOpen, setPeriodeOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [availablePeriodes, setAvailablePeriodes] = useState([]);
   const [uploadedData, setUploadedData] = useState(null);
   const [dbLoading, setDbLoading] = useState(false);
   const [dbProgress, setDbProgress] = useState(0);
   const [dbProgressLabel, setDbProgressLabel] = useState("");
   const [localUsers, setLocalUsers] = useState(USERS);
 
+  // Fungsi inti: load debitur untuk upload tertentu (cek IDB cache dulu)
+  const loadDebiturForUpload = async (upload, uploadHistory) => {
+    const cacheKey = `debitur-${upload.id}`;
+    const cached = await idbGet(cacheKey);
+    if (cached?.debitur?.length) {
+      setDbProgress(100); setDbProgressLabel("Data dimuat dari cache");
+      setUploadedData({ ...cached, uploadHistory });
+      setFilters(f => ({ ...f, periode: upload.periode_label }));
+      return;
+    }
+    const totalRows = upload.row_count || 0;
+    setDbProgressLabel(`Memuat data ${upload.periode_label}...`);
+    const PAGE = 1000;
+    let allRows = [], page = 0, hasMore = true;
+    while (hasMore) {
+      const from = page * PAGE;
+      const { data: rows, error } = await supabase
+        .from('debitur').select('*').eq('upload_id', upload.id)
+        .range(from, from + PAGE - 1);
+      if (error) throw error;
+      if (!rows?.length) { hasMore = false; break; }
+      allRows = allRows.concat(rows);
+      hasMore = rows.length === PAGE;
+      page++;
+      if (totalRows > 0) {
+        const pct = Math.min(98, Math.round(allRows.length / totalRows * 100));
+        setDbProgress(pct);
+        setDbProgressLabel(`Memuat data... ${allRows.length.toLocaleString("id-ID")} dari ${totalRows.toLocaleString("id-ID")} debitur`);
+      }
+    }
+    setDbProgress(100); setDbProgressLabel("Selesai");
+    if (!allRows.length) return;
+    const debitur = allRows.map(r => ({
+      cif: r.cif, nama: r.nama, ao: r.ao, aoId: r.ao_id, pn: r.pn,
+      uker: r.kode_uker, ukerNama: r.uker_nama, segment: r.segment,
+      sektor: r.sektor, osJt: r.os_jt, kol: r.kol, dpd: r.dpd,
+      skor: r.skor, tier: r.tier, hasAction: r.has_action, resolved: r.resolved,
+      tunggakanPokok: r.tunggakan_pokok, tunggakanBunga: r.tunggakan_bunga,
+      tunggakanDenda: r.tunggakan_denda, tunggakanPenalty: r.tunggakan_penalty,
+      tunggakanTotal: r.tunggakan_total,
+    }));
+    const uploadData = {
+      debitur,
+      periodeLabel: upload.periode_label,
+      periodeStr: upload.periode_str || '',
+      datePrinted: upload.date_printed || '',
+      totalRows: debitur.length,
+    };
+    setUploadedData({ ...uploadData, uploadHistory });
+    setFilters(f => ({ ...f, periode: upload.periode_label }));
+    idbSet(cacheKey, uploadData);
+  };
+
   const loadLatestData = async () => {
-    setDbLoading(true);
-    setDbProgress(0);
+    setDbLoading(true); setDbProgress(0);
     setDbProgressLabel("Menghubungkan ke database...");
     try {
-      // 1. Fetch metadata saja (1 baris, cepat)
-      const { data: uploads } = await supabase
-        .from('uploads').select('*').eq('jenis', 'lw321')
-        .order('tgl_file', { ascending: false }).limit(1);
-      if (!uploads?.length) return;
-      const upload = uploads[0];
-
-      // 2. Fetch semua upload untuk data trend (metadata saja, ringan)
       const { data: allUploads } = await supabase
         .from('uploads')
-        .select('id, tgl_file, periode_label, total_os_jt, total_tunggakan_jt')
-        .eq('jenis', 'lw321').order('tgl_file', { ascending: true });
-      const uploadHistory = (allUploads || [])
+        .select('id, tgl_file, periode_label, row_count, total_os_jt, total_tunggakan_jt')
+        .eq('jenis', 'lw321').order('tgl_file', { ascending: false });
+      if (!allUploads?.length) return;
+      setAvailablePeriodes(allUploads);
+      const uploadHistory = [...allUploads]
         .filter(u => u.total_os_jt != null)
+        .sort((a,b) => a.tgl_file.localeCompare(b.tgl_file))
         .map(u => ({ periodeLabel: u.periode_label, totalOsJt: u.total_os_jt, totalTunggakanJt: u.total_tunggakan_jt }));
-
-      // 3. Cek IndexedDB cache — cepat bila sudah pernah dimuat
-      const cacheKey = `debitur-${upload.id}`;
-      const cached = await idbGet(cacheKey);
-      if (cached?.debitur?.length) {
-        setDbProgress(100); setDbProgressLabel("Data dimuat dari cache");
-        setUploadedData({ ...cached, uploadHistory });
-        setFilters(f => ({ ...f, periode: upload.periode_label }));
-        return;
-      }
-
-      // 4. Slow path — load dari Supabase (hanya sekali per upload baru)
-      const totalRows = upload.row_count || 0;
-      setDbProgressLabel(`Memuat data ${upload.periode_label}...`);
-      const PAGE = 1000;
-      let allRows = [], page = 0, hasMore = true;
-      while (hasMore) {
-        const from = page * PAGE;
-        const { data: rows, error } = await supabase
-          .from('debitur').select('*').eq('upload_id', upload.id)
-          .range(from, from + PAGE - 1);
-        if (error) throw error;
-        if (!rows?.length) { hasMore = false; break; }
-        allRows = allRows.concat(rows);
-        hasMore = rows.length === PAGE;
-        page++;
-        if (totalRows > 0) {
-          const pct = Math.min(98, Math.round(allRows.length / totalRows * 100));
-          setDbProgress(pct);
-          setDbProgressLabel(`Memuat data... ${allRows.length.toLocaleString("id-ID")} dari ${totalRows.toLocaleString("id-ID")} debitur`);
-        }
-      }
-      setDbProgress(100); setDbProgressLabel("Selesai");
-      if (!allRows.length) return;
-
-      const debitur = allRows.map(r => ({
-        cif: r.cif, nama: r.nama, ao: r.ao, aoId: r.ao_id, pn: r.pn,
-        uker: r.kode_uker, ukerNama: r.uker_nama, segment: r.segment,
-        sektor: r.sektor, osJt: r.os_jt, kol: r.kol, dpd: r.dpd,
-        skor: r.skor, tier: r.tier, hasAction: r.has_action, resolved: r.resolved,
-        tunggakanPokok: r.tunggakan_pokok, tunggakanBunga: r.tunggakan_bunga,
-        tunggakanDenda: r.tunggakan_denda, tunggakanPenalty: r.tunggakan_penalty,
-        tunggakanTotal: r.tunggakan_total,
-      }));
-      const uploadData = {
-        debitur,
-        periodeLabel: upload.periode_label,
-        periodeStr: upload.periode_str || '',
-        datePrinted: upload.date_printed || '',
-        totalRows: debitur.length,
-      };
-      setUploadedData({ ...uploadData, uploadHistory });
-      setFilters(f => ({ ...f, periode: upload.periode_label }));
-
-      // 5. Simpan ke IndexedDB — login berikutnya langsung dari cache
-      idbSet(cacheKey, uploadData);
-
+      await loadDebiturForUpload(allUploads[0], uploadHistory);
     } catch (err) {
       console.error('Gagal load data dari database:', err);
+    } finally {
+      setDbLoading(false);
+    }
+  };
+
+  const switchPeriode = async (upload) => {
+    if (upload.periode_label === uploadedData?.periodeLabel) { setPeriodeOpen(false); return; }
+    setPeriodeOpen(false);
+    setDbLoading(true); setDbProgress(0);
+    try {
+      const uploadHistory = availablePeriodes
+        .filter(u => u.total_os_jt != null)
+        .sort((a,b) => a.tgl_file.localeCompare(b.tgl_file))
+        .map(u => ({ periodeLabel: u.periode_label, totalOsJt: u.total_os_jt, totalTunggakanJt: u.total_tunggakan_jt }));
+      await loadDebiturForUpload(upload, uploadHistory);
+    } catch (err) {
+      console.error('Gagal ganti periode:', err);
     } finally {
       setDbLoading(false);
     }
@@ -2802,7 +2812,34 @@ export default function App() {
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span style={{ fontSize:12.5, color:C.gray }}>Periode</span>
               {uploadedData ? (
-                <span style={{ fontSize:12.5, fontWeight:600, color:C.navy, padding:"6px 10px", border:`1px solid ${C.border}`, borderRadius:7, background:C.white }}>{uploadedData.periodeLabel}</span>
+                <div style={{ position:"relative" }}>
+                  <button onClick={()=>setPeriodeOpen(o=>!o)}
+                    style={{ fontSize:12.5, fontWeight:600, color:C.navy, padding:"6px 10px", border:`1px solid ${periodeOpen?C.navy:C.border}`,
+                      borderRadius:7, background:C.white, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+                    {uploadedData.periodeLabel}
+                    {availablePeriodes.length > 1 && <svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke={C.navy} strokeWidth="1.5" strokeLinecap="round"/></svg>}
+                  </button>
+                  {periodeOpen && availablePeriodes.length > 0 && (
+                    <>
+                      <div onClick={()=>setPeriodeOpen(false)} style={{ position:"fixed", inset:0, zIndex:98 }} />
+                      <div style={{ position:"absolute", top:"calc(100% + 6px)", right:0, background:C.white, border:`1px solid ${C.border}`,
+                        borderRadius:8, boxShadow:"0 4px 16px rgba(0,0,0,.1)", zIndex:99, minWidth:140, overflow:"hidden" }}>
+                        {availablePeriodes.map(up => {
+                          const isActive = up.periode_label === uploadedData.periodeLabel;
+                          return (
+                            <button key={up.id} onClick={()=>switchPeriode(up)}
+                              style={{ display:"flex", alignItems:"center", justifyContent:"space-between", width:"100%", padding:"9px 14px",
+                                background: isActive ? C.navyLt : "none", border:"none", fontSize:12.5, color: isActive ? C.navy : C.text,
+                                fontWeight: isActive ? 700 : 400, cursor:"pointer", textAlign:"left", gap:8 }}>
+                              {up.periode_label}
+                              {isActive && <svg width="12" height="9" viewBox="0 0 12 9" fill="none"><path d="M1 4l3.5 3.5L11 1" stroke={C.navy} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
               ) : (
                 <Select value={filters.periode} onChange={e=>setFilters(f=>({ ...f, periode:e.target.value }))} options={["Mar 2026","Apr 2026","Mei 2026"]} />
               )}
