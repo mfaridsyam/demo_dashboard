@@ -78,11 +78,6 @@ const UKER = [
   { kode:"8026", nama:"Unit Mambi",       tipe:"UNIT",  n:18 },
 ];
 
-const NAMA_AO = ["Andi","Budi","Citra","Dewi","Eka","Fajar","Gita","Hadi","Indah","Joko","Lina","Maman","Nadia","Oka","Putri","Rina","Sari","Tono","Umar","Vina","Wawan","Yuni"];
-const PREFIX = ["PT.","CV.","UD.","Toko","Koperasi"];
-const NAMA1 = ["Maju","Sinar","Sentosa","Karya","Cahaya","Mega","Bintang","Tiga","Mitra","Harapan","Surya","Berkah","Jaya","Sumber","Makmur","Sejahtera","Abadi","Mandiri","Lestari","Subur","Bahari","Rezeki","Barokah","Usaha"];
-const NAMA2 = ["Bersama","Abadi","Jaya","Indah","Utama","Timur","Putra","Sukses","Mandiri","Makmur","Sentosa","Lestari","Sejahtera","Group","Tani","Niaga"];
-const SEKTOR = ["Perdagangan","Pertanian","Jasa","Konstruksi","Perikanan","Industri"];
 
 const KOL_ORDER = ["1","2A","2B","3","4","5"];
 const KOL_COLOR = { "1":"#16A34A","2A":"#F59E0B","2B":"#EA580C","3":"#DC2626","4":"#B91C1C","5":"#7F1D1D" };
@@ -90,55 +85,7 @@ const KOL_LABEL = { "1":"Lancar","2A":"2A","2B":"2B","3":"3","4":"4","5":"5" };
 const COV = { "1":0.01,"2A":0.05,"2B":0.15,"3":0.5,"4":0.75,"5":1.0 };
 const BETTER = { "2A":"1","2B":"2A","3":"2B","4":"3","5":"4" };
 
-const rng = mulberry32(20260531);
-const AO = [];
-UKER.forEach(u => {
-  const k = u.tipe==="KANCA" ? 5 : u.tipe==="KCP" ? 3 : 2;
-  for (let i=0;i<k;i++) AO.push({ id:`${u.kode}-${i}`, nama:pick(NAMA_AO,rng), uker:u.kode, pn:`00${u.kode}${String(i).padStart(2,"0")}` });
-});
-
-const pickKol = () => { const r=rng(); return r<0.83?"1":r<0.88?"2A":r<0.92?"2B":r<0.955?"3":r<0.98?"4":"5"; };
-const dpdFor = (kol) => { const R=(a,b)=>a+Math.floor(rng()*(b-a+1)); return kol==="1"?0:kol==="2A"?R(1,30):kol==="2B"?R(31,90):kol==="3"?R(91,120):kol==="4"?R(121,180):R(181,270); };
-const segFor = (tipe) => { const r=rng(); return tipe==="UNIT"?(r<0.9?"Mikro":"Kecil"):tipe==="KCP"?(r<0.55?"Mikro":r<0.9?"Kecil":"Menengah"):(r<0.3?"Mikro":r<0.7?"Kecil":"Menengah"); };
-const osFor = (seg) => { const R=(a,b)=>Math.round(a+rng()*(b-a)); return seg==="Mikro"?R(10,100):seg==="Kecil"?R(100,800):R(800,5000); };
-const skorFor = (dpd) => { const b=dpd===0?97:dpd<=30?84:dpd<=60?72:dpd<=90?64:dpd<=120?52:dpd<=180?42:32; return clamp(Math.round(b+(rng()*12-6)),5,99); };
-const genNama = () => `${pick(PREFIX,rng)} ${pick(NAMA1,rng)}${rng()<0.6?" "+pick(NAMA2,rng):""}`;
-
-const DEBITUR = [];
-let cifSeq = 12000000;
-UKER.forEach(u => {
-  const aoU = AO.filter(a=>a.uker===u.kode);
-  for (let i=0;i<u.n;i++) {
-    const kol = pickKol();
-    const dpd = dpdFor(kol);
-    const seg = segFor(u.tipe);
-    const tier = kol==="1" ? "rendah" : (kol==="2A"||kol==="2B") ? "sedang" : "tinggi";
-    const hasAction = tier!=="rendah" && rng() < (tier==="tinggi"?0.7:0.35);
-    const resolved = hasAction && rng() < 0.3;
-    const ao = pick(aoU,rng);
-    const osJt = osFor(seg);
-    const months = Math.ceil(dpd/30) || 0;
-    const tPokok = Math.round(osJt * (dpd/360));
-    const tBunga = Math.round(tPokok * 0.15/12 * months);
-    const tDenda = Math.round(tPokok * 0.02 * months);
-    const tPenalty = dpd > 90 ? Math.round(tPokok * 0.01) : 0;
-    DEBITUR.push({
-      cif:String(cifSeq++), nama:genNama(), ao:ao.nama, aoId:ao.id, pn:ao.pn,
-      uker:u.kode, ukerNama:u.nama, segment:seg, sektor:pick(SEKTOR,rng),
-      osJt, kol, dpd, skor:skorFor(dpd), tier, hasAction, resolved,
-      tunggakanPokok:tPokok, tunggakanBunga:tBunga, tunggakanDenda:tDenda,
-      tunggakanPenalty:tPenalty, tunggakanTotal:tPokok+tBunga+tDenda+tPenalty,
-    });
-  }
-});
-
-const _aoCount = {};
-DEBITUR.forEach(d => { _aoCount[d.aoId] = (_aoCount[d.aoId]||0)+1; });
-const DEMO_AO_ID = Object.keys(_aoCount).sort((a,b)=>_aoCount[b]-_aoCount[a])[0];
-const DEMO_AO = AO.find(a=>a.id===DEMO_AO_ID);
-const DEMO_AO_UKER = UKER.find(u=>u.kode===DEMO_AO.uker);
 const DEMO_KEPALA_UKER_KODE = "5037";
-const DEMO_KEPALA_UNIT = UKER.find(u=>u.kode===DEMO_KEPALA_UKER_KODE);
 
 const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","manajemen","pengaturan"];
 const ROLES = {
@@ -150,10 +97,10 @@ const ROLES = {
     desc:"Pengendalian portofolio cabang",              akses:"Kelola action plan, simulasi CKPN & laporan",
     scope:"all",         editAction:true,  editData:false, exportReport:true,  menus:ALL_MENUS.filter(m=>m!=="manajemen"&&m!=="pengaturan") },
   kepalaUnit: { id:"kepalaUnit", nama:"Syamsuddin",      title:"Kepala Unit",             icon:"building",   color:C.kpiTeal,
-    desc:`Pengelolaan unit kerja · ${DEMO_KEPALA_UNIT?.nama||""}`, akses:"Hanya data unit sendiri · input action plan",
+    desc:`Pengelolaan unit kerja · ${UKER.find(u=>u.kode===DEMO_KEPALA_UKER_KODE)?.nama||""}`, akses:"Hanya data unit sendiri · input action plan",
     scope:"uker",        editAction:true,  editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
-  ao:         { id:"ao",         nama:DEMO_AO?.nama||"Mantri", title:"Account Officer / Mantri", icon:"userPerf", color:C.kpiTeal,
-    desc:`Tindak lanjut debitur · ${DEMO_AO_UKER?.nama||""}`,    akses:"Hanya portofolio sendiri · input action plan",
+  ao:         { id:"ao",         nama:"RM/Mantri",      title:"Account Officer / Mantri", icon:"userPerf", color:C.kpiTeal,
+    desc:"Tindak lanjut debitur portofolio sendiri",              akses:"Hanya portofolio sendiri · input action plan",
     scope:"ao",          editAction:true,  editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
   collection: { id:"collection", nama:"Yulmand Raymon Hallatu", title:"Collection Officer", icon:"userPerf",  color:C.kpiAmber,
     desc:"Penagihan debitur bermasalah",                akses:"Debitur Kol 2-5 · update penagihan",
@@ -2661,7 +2608,7 @@ export default function App() {
 
   const perms = role ? ROLES[role] : null;
 
-  const sourceDebitur = uploadedData ? uploadedData.debitur : DEBITUR;
+  const sourceDebitur = uploadedData?.debitur || [];
 
   const list = useMemo(()=>{
     if (!perms) return [];
@@ -2683,6 +2630,14 @@ export default function App() {
     else                          setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" });
   };
   const handleLogout = () => { setCurrentUser(null); setRole(null); setPage("dashboard"); setProfileOpen(false); setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" }); };
+
+  if (dbLoading) return (
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100vh", background:C.bg, gap:16 }}>
+      <div style={{ width:40, height:40, border:`4px solid ${C.border}`, borderTop:`4px solid ${C.navy}`, borderRadius:"50%", animation:"spin 1s linear infinite" }} />
+      <div style={{ fontSize:14, color:C.gray }}>Memuat data dari database...</div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
 
   if (!perms) return <Login onLogin={handleLogin} localUsers={localUsers} />;
 
