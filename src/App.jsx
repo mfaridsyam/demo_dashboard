@@ -1981,7 +1981,7 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
   const loadHistory = async () => {
     setHistLoading(true);
     try {
-      const { data } = await supabase.from('uploads').select('*').order('created_at', { ascending: false });
+      const { data } = await supabase.from('uploads').select('*').order('tgl_file', { ascending: false });
       setHistory(data || []);
     } finally { setHistLoading(false); }
   };
