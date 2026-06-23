@@ -124,6 +124,28 @@ const PERIODE = {
   "Apr 2026": { f:0.972, date:"30 Apr 2026", months:["Nov '25","Des '25","Jan '26","Feb '26","Mar '26","Apr '26"], months12:["Mei '25","Jun '25","Jul '25","Agu '25","Sep '25","Okt '25","Nov '25","Des '25","Jan '26","Feb '26","Mar '26","Apr '26"] },
   "Mar 2026": { f:0.945, date:"31 Mar 2026", months:["Okt '25","Nov '25","Des '25","Jan '26","Feb '26","Mar '26"], months12:["Apr '25","Mei '25","Jun '25","Jul '25","Agu '25","Sep '25","Okt '25","Nov '25","Des '25","Jan '26","Feb '26","Mar '26"] },
 };
+const _BNAMES = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+function getPeriode(label) {
+  if (PERIODE[label]) return PERIODE[label];
+  const parts = String(label || '').split(' ');
+  const bi = _BNAMES.indexOf(parts[0]);
+  const y = parseInt(parts[1]);
+  if (bi === -1 || isNaN(y)) return PERIODE['Mei 2026'];
+  const mo = n => { let m = bi+n, yr = y; while(m<0){m+=12;yr--;} while(m>11){m-=12;yr++;} return `${_BNAMES[m]} '${String(yr).slice(-2)}`; };
+  const lastDay = new Date(y, bi+1, 0).getDate();
+  return { f:1.0, date:`${lastDay} ${parts[0]} ${y}`, months:[-5,-4,-3,-2,-1,0].map(mo), months12:[-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1,0].map(mo) };
+}
+
+// IndexedDB cache helpers — hindari reload 49k baris setiap halaman dibuka
+async function _idbOpen() {
+  return new Promise((res,rej)=>{ const r=indexedDB.open('ews-ckpn-v1',1); r.onupgradeneeded=e=>e.target.result.createObjectStore('data'); r.onsuccess=e=>res(e.target.result); r.onerror=()=>rej(r.error); });
+}
+async function idbGet(key) {
+  try { const db=await _idbOpen(); return new Promise(res=>{ const r=db.transaction('data','readonly').objectStore('data').get(key); r.onsuccess=()=>res(r.result??null); r.onerror=()=>res(null); }); } catch { return null; }
+}
+async function idbSet(key,val) {
+  try { const db=await _idbOpen(); return new Promise(res=>{ const tx=db.transaction('data','readwrite'); tx.objectStore('data').put(val,key); tx.oncomplete=res; tx.onerror=res; }); } catch { /* */ }
+}
 const PAT_OS    = [0.93,0.95,0.96,0.975,0.99,1.0];
 const PAT_DEB   = [0.95,0.96,0.97,0.98,0.99,1.0];
 const PAT_CKPN  = [0.87,0.90,0.92,0.95,0.98,1.0];
@@ -174,7 +196,8 @@ const SNAPSHOT_HARIAN = (()=>{
 
 // --- POIN 2: buildTrendData ---
 function buildTrendData(periode, serCKPN, serTunggakan, serOS, npl) {
-  const isCurrentMonth = periode === "Jun 2026";
+  const now = new Date(); const curLabel = `${_BNAMES[now.getMonth()]} ${now.getFullYear()}`;
+  const isCurrentMonth = periode === curLabel;
   const monthly = (ser) => ser.map(d => ({ ...d, tipe:"bulanan" }));
 
   if (!isCurrentMonth) {
@@ -218,8 +241,8 @@ const fFull = (jt)=>"Rp "+Math.round(jt*1e6).toLocaleString("id-ID");
 const fPct  = (x,d=2)=>x.toLocaleString("id-ID",{minimumFractionDigits:d,maximumFractionDigits:d})+"%";
 const fMilV = (v)=>v.toLocaleString("id-ID",{minimumFractionDigits:1,maximumFractionDigits:1})+" M";
 
-function buildModel(list, periode) {
-  const P = PERIODE[periode] || PERIODE["Mei 2026"];
+function buildModel(list, periode, uploadHistory) {
+  const P = getPeriode(periode);
   const f = P.f;
   const sum = (arr,sel)=>arr.reduce((s,d)=>s+sel(d),0);
 
@@ -246,7 +269,10 @@ function buildModel(list, periode) {
   const totalTunggakanAll = sum(list,d=>d.tunggakanTotal||0) * f;
 
   const ser = (cur,pat)=>pat.map((p,i)=>({ bln:P.months[i], nilai:+(cur*p).toFixed(3) }));
-  const trendOS_raw       = ser(totalOsJt/1000, PAT_OS);
+  const realH = uploadHistory && uploadHistory.length >= 2;
+  const trendOS_raw = realH
+    ? uploadHistory.map(u=>({ bln:u.periodeLabel, nilai:+(u.totalOsJt/1000).toFixed(3) }))
+    : ser(totalOsJt/1000, PAT_OS);
   const delta = (pat)=> (1-pat[4]/pat[5])*100;
 
   // Deduplikasi per CIF: satu debitur bisa punya >1 rekening di LW321
@@ -370,7 +396,12 @@ function buildModel(list, periode) {
   });
 
   const trendCKPN_raw    = ser(ckpnExisting/1000, PAT_CKPN);
-  const trendTunggakan_raw = ser(tunggakanJt/1000, PAT_TUNGG);
+  const trendTunggakan_raw = realH
+    ? uploadHistory.map(u=>({ bln:u.periodeLabel, nilai:+(u.totalTunggakanJt/1000).toFixed(3) }))
+    : ser(tunggakanJt/1000, PAT_TUNGG);
+  const trendTunggakan12 = realH
+    ? uploadHistory.map(u=>({ bln:u.periodeLabel, nilai:+(u.totalTunggakanJt/1000).toFixed(3) }))
+    : ser12(tunggakanJt/1000, PAT_TUNGG_12);
   const trendData = buildTrendData(periode, trendCKPN_raw, trendTunggakan_raw, trendOS_raw, npl);
 
   return {
@@ -378,7 +409,7 @@ function buildModel(list, periode) {
     tunggakanJt, totalTunggakanAll,
     trendTunggakan: trendTunggakan_raw,
     trendCKPN: trendCKPN_raw,
-    trendTunggakan12: ser12(tunggakanJt/1000, PAT_TUNGG_12),
+    trendTunggakan12,
     trendCKPN12: ser12(ckpnExisting/1000, PAT_CKPN_12),
     trendData,
     deltas:{ os:delta(PAT_OS), deb:delta(PAT_DEB), ckpn:delta(PAT_CKPN) },
@@ -2553,30 +2584,41 @@ export default function App() {
     setDbProgress(0);
     setDbProgressLabel("Menghubungkan ke database...");
     try {
+      // 1. Fetch metadata saja (1 baris, cepat)
       const { data: uploads } = await supabase
-        .from('uploads')
-        .select('*')
-        .eq('jenis', 'lw321')
-        .order('tgl_file', { ascending: false })
-        .limit(1);
-
+        .from('uploads').select('*').eq('jenis', 'lw321')
+        .order('tgl_file', { ascending: false }).limit(1);
       if (!uploads?.length) return;
       const upload = uploads[0];
+
+      // 2. Fetch semua upload untuk data trend (metadata saja, ringan)
+      const { data: allUploads } = await supabase
+        .from('uploads')
+        .select('id, tgl_file, periode_label, total_os_jt, total_tunggakan_jt')
+        .eq('jenis', 'lw321').order('tgl_file', { ascending: true });
+      const uploadHistory = (allUploads || [])
+        .filter(u => u.total_os_jt != null)
+        .map(u => ({ periodeLabel: u.periode_label, totalOsJt: u.total_os_jt, totalTunggakanJt: u.total_tunggakan_jt }));
+
+      // 3. Cek IndexedDB cache — cepat bila sudah pernah dimuat
+      const cacheKey = `debitur-${upload.id}`;
+      const cached = await idbGet(cacheKey);
+      if (cached?.debitur?.length) {
+        setDbProgress(100); setDbProgressLabel("Data dimuat dari cache");
+        setUploadedData({ ...cached, uploadHistory });
+        setFilters(f => ({ ...f, periode: upload.periode_label }));
+        return;
+      }
+
+      // 4. Slow path — load dari Supabase (hanya sekali per upload baru)
       const totalRows = upload.row_count || 0;
-
       setDbProgressLabel(`Memuat data ${upload.periode_label}...`);
-
-      // Ambil semua baris dengan pagination + progress
       const PAGE = 1000;
-      let allRows = [];
-      let page = 0;
-      let hasMore = true;
+      let allRows = [], page = 0, hasMore = true;
       while (hasMore) {
         const from = page * PAGE;
         const { data: rows, error } = await supabase
-          .from('debitur')
-          .select('*')
-          .eq('upload_id', upload.id)
+          .from('debitur').select('*').eq('upload_id', upload.id)
           .range(from, from + PAGE - 1);
         if (error) throw error;
         if (!rows?.length) { hasMore = false; break; }
@@ -2589,13 +2631,10 @@ export default function App() {
           setDbProgressLabel(`Memuat data... ${allRows.length.toLocaleString("id-ID")} dari ${totalRows.toLocaleString("id-ID")} debitur`);
         }
       }
-
-      setDbProgress(100);
-      setDbProgressLabel("Selesai");
+      setDbProgress(100); setDbProgressLabel("Selesai");
       if (!allRows.length) return;
-      const rows = allRows;
 
-      const debitur = rows.map(r => ({
+      const debitur = allRows.map(r => ({
         cif: r.cif, nama: r.nama, ao: r.ao, aoId: r.ao_id, pn: r.pn,
         uker: r.kode_uker, ukerNama: r.uker_nama, segment: r.segment,
         sektor: r.sektor, osJt: r.os_jt, kol: r.kol, dpd: r.dpd,
@@ -2604,15 +2643,19 @@ export default function App() {
         tunggakanDenda: r.tunggakan_denda, tunggakanPenalty: r.tunggakan_penalty,
         tunggakanTotal: r.tunggakan_total,
       }));
-
-      setUploadedData({
+      const uploadData = {
         debitur,
         periodeLabel: upload.periode_label,
         periodeStr: upload.periode_str || '',
         datePrinted: upload.date_printed || '',
         totalRows: debitur.length,
-      });
+      };
+      setUploadedData({ ...uploadData, uploadHistory });
       setFilters(f => ({ ...f, periode: upload.periode_label }));
+
+      // 5. Simpan ke IndexedDB — login berikutnya langsung dari cache
+      idbSet(cacheKey, uploadData);
+
     } catch (err) {
       console.error('Gagal load data dari database:', err);
     } finally {
@@ -2628,6 +2671,8 @@ export default function App() {
 
     try {
       onProgress?.(8, "Menyimpan metadata upload...");
+      const totalOsJt = result.debitur.reduce((s,d)=>s+d.osJt, 0);
+      const totalTunggakanJt = result.debitur.filter(d=>d.dpd>0).reduce((s,d)=>s+d.osJt, 0);
       const { data: upload, error: upErr } = await supabase
         .from('uploads')
         .insert({
@@ -2638,6 +2683,8 @@ export default function App() {
           date_printed: result.datePrinted,
           row_count: result.totalRows,
           uploaded_by: currentUser?.pn || 'admin',
+          total_os_jt: totalOsJt,
+          total_tunggakan_jt: totalTunggakanJt,
         })
         .select()
         .single();
@@ -2687,7 +2734,7 @@ export default function App() {
         && (filters.segment==="semua" || d.segment===filters.segment);
     });
   }, [filters, perms, sourceDebitur, currentUser]);
-  const m = useMemo(()=>buildModel(list, filters.periode), [list, filters.periode]);
+  const m = useMemo(()=>buildModel(list, filters.periode, uploadedData?.uploadHistory), [list, filters.periode, uploadedData?.uploadHistory]);
 
   const handleLogin = (user) => {
     setCurrentUser(user); setRole(user.role); setPage("dashboard"); setProfileOpen(false);
