@@ -2644,7 +2644,9 @@ export default function App() {
         .select('id, tgl_file, periode_label, row_count')
         .eq('jenis', 'lw321').order('tgl_file', { ascending: false });
       if (upErr || !allUploads?.length) return;
-      setAvailablePeriodes(allUploads);
+      // Deduplicate per periode_label — pakai tgl_file terbaru (allUploads sudah sorted desc)
+      const seen = new Set();
+      setAvailablePeriodes(allUploads.filter(u => seen.has(u.periode_label) ? false : seen.add(u.periode_label)));
 
       // Query opsional — trend data (gagal diam-diam kalau kolom belum dibuat)
       let uploadHistory = [];
