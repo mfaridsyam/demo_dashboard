@@ -2692,22 +2692,23 @@ export default function App() {
       onProgress?.(8, "Menyimpan metadata upload...");
       const totalOsJt = result.debitur.reduce((s,d)=>s+d.osJt, 0);
       const totalTunggakanJt = result.debitur.filter(d=>d.dpd>0).reduce((s,d)=>s+d.osJt, 0);
-      const { data: upload, error: upErr } = await supabase
-        .from('uploads')
-        .insert({
-          jenis: 'lw321',
-          tgl_file: tglData || new Date().toISOString().split('T')[0],
-          periode_label: result.periodeLabel,
-          periode_str: result.periodeStr,
-          date_printed: result.datePrinted,
-          row_count: result.totalRows,
-          uploaded_by: currentUser?.pn || 'admin',
-          total_os_jt: totalOsJt,
-          total_tunggakan_jt: totalTunggakanJt,
-        })
-        .select()
-        .single();
-
+      const basePayload = {
+        jenis: 'lw321',
+        tgl_file: tglData || new Date().toISOString().split('T')[0],
+        periode_label: result.periodeLabel,
+        periode_str: result.periodeStr,
+        date_printed: result.datePrinted,
+        row_count: result.totalRows,
+        uploaded_by: currentUser?.pn || 'admin',
+      };
+      let { data: upload, error: upErr } = await supabase
+        .from('uploads').insert({ ...basePayload, total_os_jt: totalOsJt, total_tunggakan_jt: totalTunggakanJt })
+        .select().single();
+      // Fallback: kolom total_* belum dibuat — insert tanpa kolom tersebut
+      if (upErr?.message?.includes('total_os_jt') || upErr?.message?.includes('total_tunggakan_jt')) {
+        const retry = await supabase.from('uploads').insert(basePayload).select().single();
+        upload = retry.data; upErr = retry.error;
+      }
       if (upErr) throw upErr;
 
       const CHUNK = 500;
