@@ -185,6 +185,7 @@ export function parseLW321(file) {
             tunggakanDenda:   tDenda,
             tunggakanPenalty: tPenalty,
             tunggakanTotal:   tPokok + tBunga + tDenda + tPenalty,
+            plafonJt: plafonIDR / 1_000_000,
           });
         }
 

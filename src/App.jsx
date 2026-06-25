@@ -51,6 +51,8 @@ const ICON = {
   search:(<><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></>),
   download:(<><path d="M12 4v11"/><path d="M8 11l4 4 4-4"/><path d="M5 19h14"/></>),
   upload:(<><path d="M12 16V5"/><path d="M8 9l4-4 4 4"/><path d="M5 19h14"/></>),
+  percent:(<><circle cx="7.5" cy="7.5" r="2.8"/><circle cx="16.5" cy="16.5" r="2.8"/><line x1="19" y1="5" x2="5" y2="19"/></>),
+  trend:(<><polyline points="3 17 9 11 13 15 21 7"/><polyline points="14 7 21 7 21 14"/></>),
 };
 const Ic = ({ n, size=18, sw=1.8, style }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -87,7 +89,7 @@ const BETTER = { "2A":"1","2B":"2A","3":"2B","4":"3","5":"4" };
 
 const DEMO_KEPALA_UKER_KODE = "5037";
 
-const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","manajemen","pengaturan"];
+const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","osKurang50","manajemen","pengaturan"];
 const ROLES = {
   pinca:      { id:"pinca",      nama:"Hery Santoso",   title:"Pimpinan Cabang",        icon:"userCircle", color:C.kpiBlue,
     desc:"Monitoring seluruh cabang & unit kerja",      akses:"Lihat semua data · read-only (mode pantau)",
@@ -106,8 +108,8 @@ const ROLES = {
     desc:"Penagihan debitur bermasalah",                akses:"Debitur Kol 2-5 · update penagihan",
     scope:"bermasalah",  editAction:true,  editData:false, exportReport:false, menus:["dashboard","ews","debitur","action"] },
   admin:      { id:"admin",      nama:"Admin IT",       title:"Administrator IT",        icon:"gear",       color:C.gray,
-    desc:"Manajemen user & konfigurasi sistem",         akses:"Kelola akun pengguna · upload file LW321 & CKPN",
-    scope:"all",         editAction:false, editData:true,  exportReport:false, menus:["dashboard","manajemen","pengaturan"] },
+    desc:"Manajemen user & konfigurasi sistem · akses penuh",  akses:"Kelola akun pengguna · upload file · akses semua fitur",
+    scope:"all",         editAction:true,  editData:true,  exportReport:true,  menus:ALL_MENUS },
 };
 
 const DEMO_KU_UKER  = "5032";
@@ -1159,6 +1161,22 @@ function BreakdownRow({ d, colSpan = 10 }) {
   );
 }
 
+const KOL_RANK = {'1':1,'2A':2,'2B':3,'3':4,'4':5,'5':6};
+function groupByCif(list) {
+  const m = {};
+  list.forEach(d => {
+    if (!m[d.cif]) {
+      m[d.cif] = { ...d, totalOsJt: d.osJt, loans: [d] };
+    } else {
+      m[d.cif].loans.push(d);
+      m[d.cif].totalOsJt += d.osJt;
+      if ((KOL_RANK[d.kol]||0) > (KOL_RANK[m[d.cif].kol]||0)) { m[d.cif].kol=d.kol; m[d.cif].tier=d.tier; m[d.cif].skor=d.skor; }
+      if (d.dpd > m[d.cif].dpd) m[d.cif].dpd = d.dpd;
+    }
+  });
+  return Object.values(m);
+}
+
 function DaftarDebitur({ list }) {
   const [cari, setCari] = useState("");
   const [kol, setKol] = useState("Semua Kolektibilitas");
@@ -1166,26 +1184,32 @@ function DaftarDebitur({ list }) {
   const [selectedUker, setSelectedUker] = useState([]);
   const [sortBy, setSortBy] = useState("default");
   const [page, setPage] = useState(1);
-  const [expandedCif, setExpandedCif] = useState(null);
+  const [expandedCifs, setExpandedCifs] = useState(new Set());
+  const [expandedLoan, setExpandedLoan] = useState(null);
   const perPage = 12;
 
   const ukerList = UKER.filter(u=>list.some(d=>d.uker===u.kode));
+  const groups = useMemo(()=>groupByCif(list), [list]);
 
-  const filtered = list.filter(d=>{
-    const okCari = d.nama.toLowerCase().includes(cari.toLowerCase()) || d.cif.includes(cari);
-    const okKol = kol==="Semua Kolektibilitas" || ("Kol "+d.kol)===kol;
-    const okRsk = risiko==="Semua Risiko" || risikoLabel[d.tier]===risiko;
-    const okUker = selectedUker.length===0 || selectedUker.includes(d.uker);
+  const filtered = groups.filter(g=>{
+    const okCari = !cari || g.nama.toLowerCase().includes(cari.toLowerCase()) || g.cif.toLowerCase().includes(cari.toLowerCase());
+    const okKol  = kol==="Semua Kolektibilitas" || g.loans.some(d=>("Kol "+d.kol)===kol);
+    const okRsk  = risiko==="Semua Risiko" || g.loans.some(d=>risikoLabel[d.tier]===risiko);
+    const okUker = selectedUker.length===0 || g.loans.some(d=>selectedUker.includes(d.uker));
     return okCari && okKol && okRsk && okUker;
   });
   const sorted = sortBy==="dpd" ? [...filtered].sort((a,b)=>b.dpd-a.dpd)
-               : sortBy==="os"  ? [...filtered].sort((a,b)=>b.osJt-a.osJt)
+               : sortBy==="os"  ? [...filtered].sort((a,b)=>b.totalOsJt-a.totalOsJt)
                : filtered;
   const totalPage = Math.max(1, Math.ceil(sorted.length/perPage));
   const pg = Math.min(page, totalPage);
   const shown = sorted.slice((pg-1)*perPage, pg*perPage);
   const reset = (fn)=>(e)=>{ fn(e.target.value); setPage(1); };
 
+  const toggleCif  = (cif) => setExpandedCifs(prev=>{ const n=new Set(prev); n.has(cif)?n.delete(cif):n.add(cif); return n; });
+  const toggleLoan = (key) => setExpandedLoan(prev=>prev===key?null:key);
+
+  const tdS = (extra={})=>({ padding:"9px 12px", color:C.textMd, ...extra });
   const inputS = { padding:"7px 10px 7px 32px", border:`1px solid ${C.border}`, borderRadius:7, fontSize:13, background:C.white, color:C.text, width:240 };
 
   return (
@@ -1199,7 +1223,7 @@ function DaftarDebitur({ list }) {
         <Select value={kol} onChange={reset(setKol)} options={["Semua Kolektibilitas","Kol 1","Kol 2A","Kol 2B","Kol 3","Kol 4","Kol 5"]} />
         <Select value={risiko} onChange={reset(setRisiko)} options={["Semua Risiko","Risiko Tinggi","Risiko Sedang","Risiko Rendah"]} />
         <Select value={sortBy} onChange={(e)=>{ setSortBy(e.target.value); setPage(1); }} options={[{ value:"default", label:"Urutan Default" },{ value:"dpd", label:"DPD Tertinggi" },{ value:"os", label:"Outstanding Tertinggi" }]} />
-        <span style={{ marginLeft:"auto", fontSize:13, color:C.gray }}>{fNum(sorted.length)} debitur</span>
+        <span style={{ marginLeft:"auto", fontSize:13, color:C.gray }}>{fNum(sorted.length)} nasabah</span>
       </SubFilter>
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
         <div style={{ overflowX:"auto" }}>
@@ -1212,23 +1236,59 @@ function DaftarDebitur({ list }) {
               </tr>
             </thead>
             <tbody>
-              {shown.map((d,ri)=>{
-                const isExp = expandedCif===d.cif;
-                return [
-                  <tr key={d.cif} onClick={()=>setExpandedCif(isExp?null:d.cif)} style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}>
-                    <td style={{ padding:"9px 12px", color:C.textMd }}>{d.cif}</td>
-                    <td style={{ padding:"9px 12px", color:C.text, fontWeight:500 }}>{d.nama}</td>
-                    <td style={{ padding:"9px 12px", color:C.textMd }}>{d.ukerNama}</td>
-                    <td style={{ padding:"9px 12px", color:C.textMd }}>{d.ao}</td>
-                    <td style={{ padding:"9px 12px", color:C.textMd }}>{d.sektor}</td>
-                    <td style={{ padding:"9px 12px", fontWeight:500, color:C.textMd }}>{fJt(d.osJt)}</td>
-                    <td style={{ padding:"9px 12px", color:C.textMd }}>{d.kol}</td>
-                    <td style={{ padding:"9px 12px", color:d.dpd>30?C.red:d.dpd>0?C.amber:C.green, fontWeight:600 }}>{d.dpd}</td>
-                    <td style={{ padding:"9px 12px" }}><SkorPill s={d.skor} /></td>
-                    <td style={{ padding:"9px 12px" }}><Badge level={d.tier} /></td>
-                  </tr>,
-                  isExp && <BreakdownRow key={d.cif+"-exp"} d={d} colSpan={10} />
-                ];
+              {shown.map((g, ri)=>{
+                const multi = g.loans.length > 1;
+                const cifExp = expandedCifs.has(g.cif);
+                const rows = [];
+                // — baris utama per nasabah (1 baris per CIF) —
+                rows.push(
+                  <tr key={g.cif} onClick={()=>{ multi ? toggleCif(g.cif) : toggleLoan(g.cif+"-0"); }}
+                    style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}>
+                    <td style={tdS()}>{g.cif}</td>
+                    <td style={tdS({ fontWeight:500, color:C.text })}>
+                      {g.nama}
+                      {multi && <span style={{ marginLeft:6, fontSize:10, background:C.navyLt, color:C.navy, borderRadius:4, padding:"1px 5px", fontWeight:600 }}>{g.loans.length} pinjaman</span>}
+                    </td>
+                    <td style={tdS()}>{g.ukerNama}</td>
+                    <td style={tdS()}>{g.ao}</td>
+                    <td style={tdS()}>{g.sektor}</td>
+                    <td style={tdS({ fontWeight:500 })}>{fJt(g.totalOsJt)}</td>
+                    <td style={tdS()}>{g.kol}</td>
+                    <td style={{ padding:"9px 12px", color:g.dpd>30?C.red:g.dpd>0?C.amber:C.green, fontWeight:600 }}>{g.dpd}</td>
+                    <td style={{ padding:"9px 12px" }}><SkorPill s={g.skor} /></td>
+                    <td style={{ padding:"9px 12px" }}><Badge level={g.tier} /></td>
+                  </tr>
+                );
+                // — sub-baris: daftar pinjaman (hanya bila multi & expanded) —
+                if (multi && cifExp) {
+                  g.loans.forEach((loan, li) => {
+                    const lkey = `${g.cif}-${li}`;
+                    const lExp = expandedLoan === lkey;
+                    rows.push(
+                      <tr key={lkey} onClick={()=>toggleLoan(lkey)}
+                        style={{ background:"#EFF6FF", borderBottom:`1px solid ${C.border}`, cursor:"pointer" }}>
+                        <td style={{ padding:"7px 12px 7px 28px", color:C.navy, fontWeight:500, fontSize:12 }}>
+                          <span style={{ fontSize:10, color:C.gray, marginRight:6 }}>↳</span>Pinjaman {li+1}
+                        </td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.sektor}</td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.ukerNama}</td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.ao}</td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}></td>
+                        <td style={{ padding:"7px 12px", fontWeight:600, color:C.navy, fontSize:12 }}>{fJt(loan.osJt)}</td>
+                        <td style={{ padding:"7px 12px", fontSize:12, color:C.textMd }}>{loan.kol}</td>
+                        <td style={{ padding:"7px 12px", fontSize:12, color:loan.dpd>30?C.red:loan.dpd>0?C.amber:C.green, fontWeight:600 }}>{loan.dpd}</td>
+                        <td style={{ padding:"7px 12px" }}><SkorPill s={loan.skor} /></td>
+                        <td style={{ padding:"7px 12px" }}><Badge level={loan.tier} /></td>
+                      </tr>
+                    );
+                    if (lExp) rows.push(<BreakdownRow key={lkey+"-exp"} d={loan} colSpan={10} />);
+                  });
+                }
+                // — breakdown langsung (nasabah single pinjaman) —
+                if (!multi && expandedLoan === g.cif+"-0") {
+                  rows.push(<BreakdownRow key={g.cif+"-exp"} d={g.loans[0]} colSpan={10} />);
+                }
+                return rows;
               })}
             </tbody>
           </table>
@@ -1236,7 +1296,7 @@ function DaftarDebitur({ list }) {
         {sorted.length===0 && <div style={{ padding:24, textAlign:"center", color:C.gray, fontSize:14 }}>Tidak ada data</div>}
         {sorted.length>0 && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 16px", borderTop:`1px solid ${C.border}` }}>
-            <span style={{ fontSize:12, color:C.gray }}>Menampilkan {(pg-1)*perPage+1}–{Math.min(pg*perPage,sorted.length)} dari {fNum(sorted.length)}</span>
+            <span style={{ fontSize:12, color:C.gray }}>Menampilkan {(pg-1)*perPage+1}–{Math.min(pg*perPage,sorted.length)} dari {fNum(sorted.length)} nasabah</span>
             <div style={{ display:"flex", gap:6, alignItems:"center" }}>
               <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={pg<=1} style={pgBtn(pg<=1)}>‹ Prev</button>
               <span style={{ fontSize:12.5, color:C.textMd }}>Hal {pg} / {totalPage}</span>
@@ -1995,6 +2055,177 @@ function Laporan({ m, list, perms }) {
   );
 }
 
+function OsKurang50({ list }) {
+  const [selUker, setSelUker] = useState(null);
+  const [debPage, setDebPage] = useState(1);
+  const [debSort, setDebSort] = useState("os");
+  const [expandedCifs, setExpandedCifs] = useState(new Set());
+  const [expandedLoan, setExpandedLoan] = useState(null);
+  const PER_PAGE = 20;
+
+  useEffect(() => { setDebPage(1); setExpandedCifs(new Set()); setExpandedLoan(null); }, [selUker]);
+
+  // Debitur dengan OS < 50% plafon (hanya yang plafonJt tersedia & > 0)
+  const osFiltered = useMemo(() => list.filter(d => d.plafonJt > 0 && d.osJt < d.plafonJt * 0.5), [list]);
+
+  // Unit kerja list
+  const unitList = useMemo(() => {
+    const m = {};
+    osFiltered.forEach(d => {
+      if (!m[d.uker]) {
+        const u = UKER.find(u => u.kode === d.uker);
+        m[d.uker] = { kode:d.uker, nama:d.ukerNama||(u?.nama||d.uker), items:[], totalOs:0, totalPlafon:0 };
+      }
+      m[d.uker].items.push(d);
+      m[d.uker].totalOs    += d.osJt;
+      m[d.uker].totalPlafon += d.plafonJt;
+    });
+    return Object.values(m).sort((a,b) => b.items.length - a.items.length);
+  }, [osFiltered]);
+
+  // Debitur di unit terpilih (CIF-grouped)
+  const unitDebitur = useMemo(() => {
+    if (!selUker) return [];
+    const items = osFiltered.filter(d => d.uker === selUker.kode);
+    const sorted = debSort === "os"     ? [...items].sort((a,b)=>a.osJt-b.osJt)
+                 : debSort === "plafon" ? [...items].sort((a,b)=>b.plafonJt-a.plafonJt)
+                 : [...items].sort((a,b)=>(a.osJt/a.plafonJt)-(b.osJt/b.plafonJt));
+    return groupByCif(sorted);
+  }, [selUker, osFiltered, debSort]);
+
+  const totalPage = Math.max(1, Math.ceil(unitDebitur.length / PER_PAGE));
+  const pg = Math.min(debPage, totalPage);
+  const shown = unitDebitur.slice((pg-1)*PER_PAGE, pg*PER_PAGE);
+
+  const toggleCif  = (cif) => setExpandedCifs(prev => { const n=new Set(prev); n.has(cif)?n.delete(cif):n.add(cif); return n; });
+  const toggleLoan = (key) => setExpandedLoan(prev => prev===key?null:key);
+
+  const pctBadge = (os, plafon) => {
+    const pct = plafon > 0 ? (os/plafon*100).toFixed(1) : "—";
+    return <span style={{ fontSize:10.5, background:"#FEF9C3", color:"#854D0E", borderRadius:4, padding:"1px 5px", fontWeight:600 }}>{pct}%</span>;
+  };
+
+  if (!selUker) return (
+    <div>
+      {osFiltered.length === 0 && (
+        <div style={{ ...card, textAlign:"center", padding:32, color:C.gray }}>
+          <div style={{ fontSize:16, marginBottom:8 }}>Belum ada data plafon</div>
+          <div style={{ fontSize:13 }}>Upload ulang file LW321 agar kolom plafon tersimpan ke database.</div>
+        </div>
+      )}
+      {unitList.length > 0 && (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))", gap:16 }}>
+          {unitList.map(u => (
+            <div key={u.kode} onClick={()=>setSelUker(u)} style={{ ...card, cursor:"pointer", transition:"box-shadow .15s" }}
+              onMouseEnter={e=>e.currentTarget.style.boxShadow="0 4px 16px rgba(0,0,0,.1)"}
+              onMouseLeave={e=>e.currentTarget.style.boxShadow=card.boxShadow}>
+              <div style={{ fontWeight:700, fontSize:14, color:C.navy, marginBottom:4 }}>{u.nama}</div>
+              <div style={{ fontSize:12, color:C.gray, marginBottom:12 }}>{u.kode}</div>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                <span style={{ fontSize:13, color:C.text }}>{fNum(u.items.length)} debitur OS &lt; 50%</span>
+                <span style={{ fontSize:13, fontWeight:600, color:C.amber }}>{fJt(u.totalOs)} Jt</span>
+              </div>
+              <div style={{ height:4, borderRadius:2, background:C.border, overflow:"hidden" }}>
+                <div style={{ height:"100%", width:`${Math.min(100, u.totalOs/u.totalPlafon*100)}%`, background:C.amber, borderRadius:2 }} />
+              </div>
+              <div style={{ fontSize:11, color:C.gray, marginTop:4, textAlign:"right" }}>Rata-rata OS/Plafon: {(u.totalOs/u.totalPlafon*100).toFixed(1)}%</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:16 }}>
+        <button onClick={()=>setSelUker(null)} style={{ ...pgBtn(false), padding:"6px 12px" }}>← Kembali</button>
+        <span style={{ fontWeight:600, fontSize:15, color:C.navy }}>{selUker.nama}</span>
+        <span style={{ fontSize:12, color:C.gray }}>— {fNum(unitDebitur.length)} nasabah OS &lt; 50% plafon</span>
+        <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
+          <Select value={debSort} onChange={e=>{ setDebSort(e.target.value); setDebPage(1); }}
+            options={[{ value:"os", label:"OS Terendah" },{ value:"pct", label:"Rasio OS/Plafon" },{ value:"plafon", label:"Plafon Tertinggi" }]} />
+        </div>
+      </div>
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ overflowX:"auto" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
+            <thead>
+              <tr>
+                {["CIF","Nama Debitur","RM/Mantri","Sektor","Outstanding","Plafon","OS / Plafon","Kol","DPD"].map((h,i)=>(
+                  <th key={i} style={{ padding:"9px 12px", color:C.gray, fontWeight:600, fontSize:10.5, textTransform:"uppercase", textAlign:"left", whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}`, background:C.grayLt }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((g, ri) => {
+                const multi = g.loans.length > 1;
+                const cifExp = expandedCifs.has(g.cif);
+                const rows = [];
+                rows.push(
+                  <tr key={g.cif} onClick={()=>{ multi ? toggleCif(g.cif) : toggleLoan(g.cif+"-0"); }}
+                    style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{g.cif}</td>
+                    <td style={{ padding:"9px 12px", fontWeight:500, color:C.text }}>
+                      {g.nama}
+                      {multi && <span style={{ marginLeft:6, fontSize:10, background:C.navyLt, color:C.navy, borderRadius:4, padding:"1px 5px", fontWeight:600 }}>{g.loans.length} pinjaman</span>}
+                    </td>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{g.ao}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{g.sektor}</td>
+                    <td style={{ padding:"9px 12px", fontWeight:600, color:C.amber }}>{fJt(g.totalOsJt)}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{fJt(g.loans.reduce((s,l)=>s+l.plafonJt,0))}</td>
+                    <td style={{ padding:"9px 12px" }}>{pctBadge(g.totalOsJt, g.loans.reduce((s,l)=>s+l.plafonJt,0))}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{g.kol}</td>
+                    <td style={{ padding:"9px 12px", color:g.dpd>30?C.red:g.dpd>0?C.amber:C.green, fontWeight:600 }}>{g.dpd}</td>
+                  </tr>
+                );
+                if (multi && cifExp) {
+                  g.loans.forEach((loan, li) => {
+                    const lkey = `${g.cif}-${li}`;
+                    const lExp = expandedLoan === lkey;
+                    rows.push(
+                      <tr key={lkey} onClick={()=>toggleLoan(lkey)}
+                        style={{ background:"#FFF7ED", borderBottom:`1px solid ${C.border}`, cursor:"pointer" }}>
+                        <td style={{ padding:"7px 12px 7px 28px", color:C.navy, fontWeight:500, fontSize:12 }}>
+                          <span style={{ fontSize:10, color:C.gray, marginRight:6 }}>↳</span>Pinjaman {li+1}
+                        </td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.sektor}</td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.ao}</td>
+                        <td style={{ padding:"7px 12px", fontSize:12 }}></td>
+                        <td style={{ padding:"7px 12px", fontWeight:600, color:C.amber, fontSize:12 }}>{fJt(loan.osJt)}</td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{fJt(loan.plafonJt)}</td>
+                        <td style={{ padding:"7px 12px", fontSize:12 }}>{pctBadge(loan.osJt, loan.plafonJt)}</td>
+                        <td style={{ padding:"7px 12px", fontSize:12, color:C.textMd }}>{loan.kol}</td>
+                        <td style={{ padding:"7px 12px", fontSize:12, color:loan.dpd>30?C.red:loan.dpd>0?C.amber:C.green, fontWeight:600 }}>{loan.dpd}</td>
+                      </tr>
+                    );
+                    if (lExp) rows.push(<BreakdownRow key={lkey+"-exp"} d={loan} colSpan={9} />);
+                  });
+                }
+                if (!multi && expandedLoan === g.cif+"-0") {
+                  rows.push(<BreakdownRow key={g.cif+"-exp"} d={g.loans[0]} colSpan={9} />);
+                }
+                return rows;
+              })}
+            </tbody>
+          </table>
+        </div>
+        {unitDebitur.length === 0 && <div style={{ padding:24, textAlign:"center", color:C.gray }}>Tidak ada debitur OS &lt; 50% di unit ini</div>}
+        {unitDebitur.length > 0 && (
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 16px", borderTop:`1px solid ${C.border}` }}>
+            <span style={{ fontSize:12, color:C.gray }}>Menampilkan {(pg-1)*PER_PAGE+1}–{Math.min(pg*PER_PAGE,unitDebitur.length)} dari {fNum(unitDebitur.length)}</span>
+            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+              <button onClick={()=>setDebPage(p=>Math.max(1,p-1))} disabled={pg<=1} style={pgBtn(pg<=1)}>‹ Prev</button>
+              <span style={{ fontSize:12.5, color:C.textMd }}>Hal {pg} / {totalPage}</span>
+              <button onClick={()=>setDebPage(p=>Math.min(totalPage,p+1))} disabled={pg>=totalPage} style={pgBtn(pg>=totalPage)}>Next ›</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
   const w = useWindowWidth();
   const [uploading,      setUploading]      = useState(false);
@@ -2406,6 +2637,7 @@ const MENU = [
   { id:"ckpn",        label:"Simulasi CKPN",    icon:"calc",      chevron:true, title:"SIMULASI CKPN", sub:"Estimasi CKPN & potensi penghematan" },
   { id:"kinerjaAO",   label:"Kinerja RM/Mantri", icon:"userPerf",  chevron:true, title:"KINERJA RM/MANTRI", sub:"Rekap kinerja per RM/Mantri" },
   { id:"kinerjaUnit", label:"Kinerja Unit",     icon:"building",  chevron:true, title:"KINERJA UNIT KERJA", sub:"Rekap kinerja per unit kerja" },
+  { id:"osKurang50",  label:"OS < 50%",         icon:"percent",   chevron:true, title:"DEBITUR OS < 50% PLAFON", sub:"Debitur dengan outstanding di bawah 50% plafon awal" },
   { id:"manajemen",   label:"Manajemen User",   icon:"users",     chevron:true, title:"MANAJEMEN USER", sub:"Kelola akun & hak akses pengguna sistem" },
   { id:"pengaturan",  label:"Pengaturan",       icon:"gear",      chevron:true, title:"PENGATURAN", sub:"Import data, unit kerja & parameter sistem" },
 ];
@@ -2621,6 +2853,7 @@ export default function App() {
       tunggakanPokok: r.tunggakan_pokok, tunggakanBunga: r.tunggakan_bunga,
       tunggakanDenda: r.tunggakan_denda, tunggakanPenalty: r.tunggakan_penalty,
       tunggakanTotal: r.tunggakan_total,
+      plafonJt: r.plafon_jt ?? 0,
     }));
     const uploadData = {
       debitur,
@@ -2714,23 +2947,38 @@ export default function App() {
       if (upErr) throw upErr;
 
       const CHUNK = 500;
-      const rows = result.debitur.map(d => ({
-        upload_id: upload.id,
-        cif: d.cif, nama: d.nama, ao: d.ao, ao_id: d.aoId, pn: d.pn,
-        kode_uker: d.uker, uker_nama: d.ukerNama, segment: d.segment,
-        sektor: d.sektor, os_jt: d.osJt, kol: d.kol, dpd: d.dpd,
-        skor: d.skor, tier: d.tier, has_action: d.hasAction, resolved: d.resolved,
-        tunggakan_pokok: d.tunggakanPokok, tunggakan_bunga: d.tunggakanBunga,
-        tunggakan_denda: d.tunggakanDenda, tunggakan_penalty: d.tunggakanPenalty,
-        tunggakan_total: d.tunggakanTotal,
-      }));
-
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        const { error } = await supabase.from('debitur').insert(rows.slice(i, i + CHUNK));
+      const total = result.debitur.length;
+      const mkRow = (d, withPlafon) => {
+        const r = {
+          upload_id: upload.id,
+          cif: d.cif, nama: d.nama, ao: d.ao, ao_id: d.aoId, pn: d.pn,
+          kode_uker: d.uker, uker_nama: d.ukerNama, segment: d.segment,
+          sektor: d.sektor, os_jt: d.osJt, kol: d.kol, dpd: d.dpd,
+          skor: d.skor, tier: d.tier, has_action: d.hasAction, resolved: d.resolved,
+          tunggakan_pokok: d.tunggakanPokok, tunggakan_bunga: d.tunggakanBunga,
+          tunggakan_denda: d.tunggakanDenda, tunggakan_penalty: d.tunggakanPenalty,
+          tunggakan_total: d.tunggakanTotal,
+        };
+        if (withPlafon) r.plafon_jt = d.plafonJt ?? null;
+        return r;
+      };
+      // Deteksi otomatis: coba chunk pertama dengan plafon_jt
+      let withPlafon = true;
+      let startAt = 0;
+      const firstErr = (await supabase.from('debitur').insert(result.debitur.slice(0, CHUNK).map(d => mkRow(d, true)))).error;
+      if (firstErr) {
+        if (firstErr.message?.includes('plafon_jt')) {
+          withPlafon = false; // kolom belum ada, insert tanpa plafon_jt mulai dari awal
+        } else throw firstErr;
+      } else {
+        startAt = CHUNK;
+        onProgress?.(10 + Math.round(Math.min(CHUNK, total) / total * 88), `Menyimpan ${Math.min(CHUNK, total).toLocaleString("id-ID")} dari ${total.toLocaleString("id-ID")} debitur...`);
+      }
+      for (let i = startAt; i < total; i += CHUNK) {
+        const { error } = await supabase.from('debitur').insert(result.debitur.slice(i, i + CHUNK).map(d => mkRow(d, withPlafon)));
         if (error) throw error;
-        const saved = Math.min(i + CHUNK, rows.length);
-        const pct = 10 + Math.round(saved / rows.length * 88);
-        onProgress?.(pct, `Menyimpan ${saved.toLocaleString("id-ID")} dari ${rows.length.toLocaleString("id-ID")} debitur...`);
+        const saved = Math.min(i + CHUNK, total);
+        onProgress?.(10 + Math.round(saved / total * 88), `Menyimpan ${saved.toLocaleString("id-ID")} dari ${total.toLocaleString("id-ID")} debitur...`);
       }
       onProgress?.(100, "Selesai!");
     } catch (err) {
@@ -2798,6 +3046,7 @@ export default function App() {
     ckpn:        <SimulasiCKPN m={m} />,
     kinerjaAO:   <KinerjaAO m={m} />,
     kinerjaUnit: <KinerjaUnit m={m} list={list} />,
+    osKurang50:  <OsKurang50 list={list} />,
     laporan:     <Laporan m={m} list={list} perms={perms} />,
     manajemen:   <ManajemenUser localUsers={localUsers} setLocalUsers={setLocalUsers} />,
     pengaturan:  <Pengaturan perms={perms} onUpload={handleUploadFile} uploadedData={uploadedData} onReset={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Jun 2026"})); }} onDataChanged={loadLatestData} />,
