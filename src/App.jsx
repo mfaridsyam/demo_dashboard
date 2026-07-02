@@ -4772,7 +4772,10 @@ export default function App() {
       const terkini = byDate[0];
       const tDate = new Date(terkini.d);
       const kemarin   = byDate.find(u => u.d < terkini.d);
-      const bulanLalu = byDate.find(u => { const dt = new Date(u.d); return dt.getFullYear() < tDate.getFullYear() || dt.getMonth() < tDate.getMonth(); });
+      // bulanLalu = upload dari bulan sebelum kemarin (bukan sebelum terkini),
+      // agar ketika kemarin=30/06 dan terkini=01/07 kita dapat 31/05 (bukan 30/06 lagi).
+      const kDate     = kemarin ? new Date(kemarin.d) : tDate;
+      const bulanLalu = byDate.find(u => { const dt = new Date(u.d); return dt.getFullYear() < kDate.getFullYear() || (dt.getFullYear() === kDate.getFullYear() && dt.getMonth() < kDate.getMonth()); });
       const akhirThn  = byDate.find(u => new Date(u.d).getFullYear() < tDate.getFullYear());
       const fmt = (d) => { const [y,mo,da] = d.split('-'); return `${da}/${mo}/${y}`; };
       const refDefs = [
