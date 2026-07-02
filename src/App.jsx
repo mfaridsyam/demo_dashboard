@@ -1,7 +1,15 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { parseLW321 } from "./lw321Parser.js";
-import { supabase } from "./supabaseClient.js";
-import * as XLSX from 'xlsx';
+import { parseCKPN } from "./ckpnParser.js";
+import { parseRecoveryPH } from "./recoveryPhParser.js";
+import { fetchUploads, insertUpload, deleteUpload, fetchDebitur, bulkInsertDebitur, fetchActionPlans, saveActionPlan, updateActionPlan, deleteActionPlan, fetchCkpnSummary, bulkInsertCkpn, fetchRecPhSummary, bulkInsertRecPh, fetchCkpnTrend, fetchRecPhTrend, fetchMantriAgg, fetchMantriAggCross } from "./apiClient.js";
+// Satu SheetJS saja: xlsx-js-style (superset xlsx + dukung styling). Mengimpor 'xlsx' juga akan
+// menimbulkan konflik global XLSX yang membuat style hilang saat di-bundle.
+import * as XLSX from 'xlsx-js-style';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import html2canvas from 'html2canvas';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, PieChart, Pie, Cell, Sector, LabelList, BarChart, Bar, Legend
@@ -60,9 +68,6 @@ const Ic = ({ n, size=18, sw=1.8, style }) => (
     style={style}>{ICON[n]}</svg>
 );
 
-function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
-const clamp = (x,a,b)=>Math.max(a,Math.min(b,x));
-const pick = (arr,rng)=>arr[Math.floor(rng()*arr.length)];
 
 const UKER = [
   { kode:"0259", nama:"Kanca Polewali",   tipe:"KANCA", n:80 },
@@ -89,7 +94,7 @@ const BETTER = { "2A":"1","2B":"2A","3":"2B","4":"3","5":"4" };
 
 const DEMO_KEPALA_UKER_KODE = "5037";
 
-const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","osKurang50","manajemen","pengaturan"];
+const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","osKurang50","buatLaporan","secMantri","mantriRealisasi","mantriOs","mantriSmlRp","mantriNplRp","mantriSmlPct","mantriNplPct","mantriNetDgSml","mantriNetDgNpl","manajemen","pengaturan"];
 const ROLES = {
   pinca:      { id:"pinca",      nama:"Hery Santoso",   title:"Pimpinan Cabang",        icon:"userCircle", color:C.kpiBlue,
     desc:"Monitoring seluruh cabang & unit kerja",      akses:"Lihat semua data · read-only (mode pantau)",
@@ -110,12 +115,16 @@ const ROLES = {
   admin:      { id:"admin",      nama:"Admin IT",       title:"Administrator IT",        icon:"gear",       color:C.gray,
     desc:"Manajemen user & konfigurasi sistem · akses penuh",  akses:"Kelola akun pengguna · upload file · akses semua fitur",
     scope:"all",         editAction:true,  editData:true,  exportReport:true,  menus:ALL_MENUS },
+  superadmin: { id:"superadmin", nama:"Super Admin IT",  title:"Super Administrator IT",   icon:"gear",       color:"#92400E",
+    desc:"Kasta tertinggi · kelola semua akun termasuk Admin IT", akses:"Kelola semua akun · akses penuh sistem",
+    scope:"all",         editAction:true,  editData:true,  exportReport:true,  menus:ALL_MENUS },
 };
 
 const DEMO_KU_UKER  = "5032";
+const SUPERADMIN_ID = "u-it-1"; // ID tetap, tidak bisa diubah siapapun
 const USERS = [
-  { id:"u-it-1",  pn:"90188658", nama:"Muhammad Farid Syam",   username:"farid.syam",      password:"demo123", role:"admin",      uker:null,         aoId:null, aktif:true },
-  { id:"u-it-2",  pn:"387188",   nama:"Deni Suhardiman",       username:"deni.suhardiman", password:"demo123", role:"admin",      uker:null,         aoId:null, aktif:true },
+  { id:"u-it-1",  pn:"90188658", nama:"Muhammad Farid Syam",   username:"farid.syam",      password:"demo123", role:"superadmin", uker:null,         aoId:null, aktif:true },
+  { id:"u-it-2",  pn:"00387188", nama:"Deni Suhardiman",       username:"deni.suhardiman", password:"demo123", role:"admin",      uker:null,         aoId:null, aktif:true },
   { id:"u-pinca", pn:"56848",    nama:"Hery Santoso",          username:"hery.santoso",    password:"demo123", role:"pinca",      uker:null,         aoId:null, aktif:true },
   { id:"u-mb",    pn:"79028",    nama:"A. Achmad Rizal",       username:"achmad.rizal",    password:"demo123", role:"mb",         uker:null,         aoId:null, aktif:true },
   { id:"u-ku",    pn:"176363",   nama:"Syamsuddin",            username:"syamsuddin",      password:"demo123", role:"kepalaUnit", uker:DEMO_KU_UKER, aoId:null, aktif:true },
@@ -148,93 +157,7 @@ async function idbGet(key) {
 async function idbSet(key,val) {
   try { const db=await _idbOpen(); return new Promise(res=>{ const tx=db.transaction('data','readwrite'); tx.objectStore('data').put(val,key); tx.oncomplete=res; tx.onerror=res; }); } catch { /* */ }
 }
-const PAT_OS    = [0.93,0.95,0.96,0.975,0.99,1.0];
-const PAT_DEB   = [0.95,0.96,0.97,0.98,0.99,1.0];
-const PAT_CKPN  = [0.87,0.90,0.92,0.95,0.98,1.0];
-const PAT_TUNGG = [0.66,0.74,0.81,0.94,0.86,1.0];
-const PAT_CKPN_12  = [0.62,0.65,0.68,0.72,0.76,0.81, 0.87,0.90,0.92,0.95,0.98,1.0];
-const PAT_TUNGG_12 = [0.38,0.43,0.49,0.54,0.58,0.62, 0.66,0.74,0.81,0.94,0.86,1.0];
-
-// --- Snapshot harian & bulanan (mock) ---
-const HARI_KERJA_JUNI = ["1 Jun","2 Jun","3 Jun","4 Jun","5 Jun","8 Jun","9 Jun","10 Jun","11 Jun","12 Jun","15 Jun","16 Jun","17 Jun","18 Jun","19 Jun","20 Jun"];
-
-// Nilai acuan Mei '26 (akhir bulan) — estimasi konsisten dengan pola buildModel
-const _SB = { osJt:28500, totalDeb:440, npl:7.80, ckpnJt:1185, tunggakanJt:3180 };
-const _PAT6_DEB = [0.95,0.96,0.97,0.98,0.99,1.0];
-const _PAT6_NPL = [0.83,0.87,0.90,0.94,0.97,1.0];
-
-const SNAPSHOT_BULANAN = ["Des '25","Jan '26","Feb '26","Mar '26","Apr '26","Mei '26"].map((bulan,i)=>({
-  bulan, tipe:"bulanan",
-  osJt:        Math.round(_SB.osJt        * PAT_OS[i]),
-  totalDeb:    Math.round(_SB.totalDeb    * _PAT6_DEB[i]),
-  npl:         +(_SB.npl                 * _PAT6_NPL[i]).toFixed(2),
-  ckpnJt:      Math.round(_SB.ckpnJt     * PAT_CKPN[i]),
-  tunggakanJt: Math.round(_SB.tunggakanJt* PAT_TUNGG[i]),
-}));
-
-const rngSnap = mulberry32(20260620);
-const SNAPSHOT_HARIAN = (()=>{
-  const mei = SNAPSHOT_BULANAN[5];
-  const rows = [];
-  let cur = {
-    osJt:        Math.round(mei.osJt        * 1.004),
-    totalDeb:    mei.totalDeb,
-    npl:         mei.npl,
-    ckpnJt:      Math.round(mei.ckpnJt      * 1.005),
-    tunggakanJt: Math.round(mei.tunggakanJt * 1.004),
-  };
-  for (const tgl of HARI_KERJA_JUNI) {
-    cur = {
-      osJt:        Math.round(cur.osJt        * (1 + (rngSnap()-0.5)*0.006  + 0.0004)),
-      totalDeb:    cur.totalDeb + (rngSnap() > 0.58 ? 1 : 0),
-      npl:         +Math.min(10.5, Math.max(6.0, cur.npl + (rngSnap()-0.46)*0.12)).toFixed(2),
-      ckpnJt:      Math.round(cur.ckpnJt      * (1 + (rngSnap()-0.5)*0.008  + 0.0005)),
-      tunggakanJt: Math.round(cur.tunggakanJt * (1 + (rngSnap()-0.5)*0.008  + 0.0004)),
-    };
-    rows.push({ tgl, tipe:"harian", ...cur });
-  }
-  return rows;
-})();
-
-// --- POIN 2: buildTrendData ---
-function buildTrendData(periode, serCKPN, serTunggakan, serOS, npl) {
-  const now = new Date(); const curLabel = `${_BNAMES[now.getMonth()]} ${now.getFullYear()}`;
-  const isCurrentMonth = periode === curLabel;
-  const monthly = (ser) => ser.map(d => ({ ...d, tipe:"bulanan" }));
-
-  if (!isCurrentMonth) {
-    return {
-      trendOS:        monthly(serOS),
-      trendCKPN:      monthly(serCKPN),
-      trendTunggakan: monthly(serTunggakan),
-      trendNPL:       serCKPN.map((d,i) => ({ bln:d.bln, nilai:+(_PAT6_NPL[i]*npl).toFixed(2), tipe:"bulanan" })),
-      isCurrentMonth: false,
-      label: "6 bulan terakhir",
-    };
-  }
-
-  // Skala SNAPSHOT_HARIAN relatif terhadap titik Mei '26
-  const meiCKPN  = serCKPN[serCKPN.length-1].nilai;
-  const meiTungg = serTunggakan[serTunggakan.length-1].nilai;
-  const meiOS    = serOS[serOS.length-1].nilai;
-  const bCKPN    = SNAPSHOT_BULANAN[5].ckpnJt;
-  const bTungg   = SNAPSHOT_BULANAN[5].tunggakanJt;
-  const bOS      = SNAPSHOT_BULANAN[5].osJt;
-
-  const dailyCKPN  = SNAPSHOT_HARIAN.map(s => ({ bln:s.tgl, nilai:+(s.ckpnJt/bCKPN*meiCKPN).toFixed(3),          tipe:"harian" }));
-  const dailyTungg = SNAPSHOT_HARIAN.map(s => ({ bln:s.tgl, nilai:+(s.tunggakanJt/bTungg*meiTungg).toFixed(3),    tipe:"harian" }));
-  const dailyOS    = SNAPSHOT_HARIAN.map(s => ({ bln:s.tgl, nilai:+(s.osJt/bOS*meiOS).toFixed(3),                 tipe:"harian" }));
-  const dailyNPL   = SNAPSHOT_HARIAN.map(s => ({ bln:s.tgl, nilai:s.npl, tipe:"harian" }));
-
-  return {
-    trendOS:        [...monthly(serOS),        ...dailyOS],
-    trendCKPN:      [...monthly(serCKPN),      ...dailyCKPN],
-    trendTunggakan: [...monthly(serTunggakan), ...dailyTungg],
-    trendNPL:       [...serCKPN.map((d,i) => ({ bln:d.bln, nilai:+(_PAT6_NPL[i]*npl).toFixed(2), tipe:"bulanan" })), ...dailyNPL],
-    isCurrentMonth: true,
-    label: "6 bln + harian Jun 2026",
-  };
-}
+// Subsistem data mock (PAT_*/SNAPSHOT_*/buildTrendData) dihapus — dashboard memakai data upload asli sepenuhnya.
 
 const fNum  = (n)=>Math.round(n).toLocaleString("id-ID");
 const fMil  = (jt)=>"Rp "+(jt/1000).toLocaleString("id-ID",{minimumFractionDigits:2,maximumFractionDigits:2})+" M";
@@ -243,12 +166,13 @@ const fFull = (jt)=>"Rp "+Math.round(jt*1e6).toLocaleString("id-ID");
 const fPct  = (x,d=2)=>x.toLocaleString("id-ID",{minimumFractionDigits:d,maximumFractionDigits:d})+"%";
 const fMilV = (v)=>v.toLocaleString("id-ID",{minimumFractionDigits:1,maximumFractionDigits:1})+" M";
 
-function buildModel(list, periode, uploadHistory) {
+function buildModel(list, periode, uploadHistory, uploadHistoryAll) {
   const P = getPeriode(periode);
   const f = P.f;
   const sum = (arr,sel)=>arr.reduce((s,d)=>s+sel(d),0);
 
-  const totalDeb = list.length;
+  const totalDeb = new Set(list.map(d => d.cif)).size; // nasabah unik (untuk KPI)
+  const totalLoans = list.length; // total rekening/baris (untuk denominator %)
   const totalOsJt = sum(list,d=>d.osJt) * f;
   const tier = { rendah:0, sedang:0, tinggi:0 };
   list.forEach(d=>tier[d.tier]++);
@@ -257,7 +181,7 @@ function buildModel(list, periode, uploadHistory) {
     const items = list.filter(d=>d.kol===k);
     const cnt = items.length;
     return { kol:k, legend:KOL_LABEL[k], color:KOL_COLOR[k], value:cnt,
-      pct: totalDeb? cnt/totalDeb*100 : 0, osJt: sum(items,d=>d.osJt)*f };
+      pct: totalLoans? cnt/totalLoans*100 : 0, osJt: sum(items,d=>d.osJt)*f };
   });
 
   const osTinggi = sum(list.filter(d=>d.tier==="tinggi"),d=>d.osJt)*f;
@@ -270,12 +194,37 @@ function buildModel(list, periode, uploadHistory) {
   const tunggakanJt  = sum(list.filter(d=>d.dpd>0),d=>d.osJt) * f;
   const totalTunggakanAll = sum(list,d=>d.tunggakanTotal||0) * f;
 
-  const ser = (cur,pat)=>pat.map((p,i)=>({ bln:P.months[i], nilai:+(cur*p).toFixed(3) }));
-  const realH = uploadHistory && uploadHistory.length >= 2;
-  const trendOS_raw = realH
-    ? uploadHistory.map(u=>({ bln:u.periodeLabel, nilai:+(u.totalOsJt/1000).toFixed(3) }))
-    : ser(totalOsJt/1000, PAT_OS);
-  const delta = (pat)=> (1-pat[4]/pat[5])*100;
+  // --- Trend dari data upload asli: kerangka bulan tetap (P.months), 0 bila bulan itu belum ada file ---
+  // Konversi label periode "Jun 2026" -> "Jun '26" agar cocok dgn P.months
+  const toShort = (pl) => { const [mon,yr] = String(pl||'').split(' '); return `${mon} '${String(yr).slice(-2)}`; };
+  const curShort = toShort(periode);
+  // Trend OS & Tunggakan dari file LW321. Trend CKPN TIDAK dihitung dari LW321 — CKPN punya file sendiri
+  // (jenis 'ckpn'), ditangani di dashboard memakai ckpnData.
+  const osByShort = {}, tunggByShort = {}, debByShort = {};
+  (uploadHistory || []).forEach(u => {
+    const s = toShort(u.periodeLabel);
+    if (u.totalOsJt        != null) osByShort[s]    = +(u.totalOsJt/1000).toFixed(3);
+    if (u.totalTunggakanJt != null) tunggByShort[s] = +(u.totalTunggakanJt/1000).toFixed(3);
+    if (u.rowCount         != null) debByShort[s]   = u.rowCount;
+  });
+  // Nilai bulan berjalan dari data yang sedang dimuat — fallback bila kolom total belum diisi di DB
+  const liveOS    = +(totalOsJt/1000).toFixed(3);
+  const liveTungg = +(totalTunggakanAll/1000).toFixed(3);
+  const skeleton = (months, byShort, live) => {
+    const map = { ...byShort };
+    if (live != null && map[curShort] == null) map[curShort] = live;
+    return months.map(mLabel => ({ bln: mLabel, nilai: map[mLabel] != null ? map[mLabel] : 0 }));
+  };
+  const trendOS_raw  = skeleton(P.months, osByShort, liveOS);
+  const trendDeb_raw = skeleton(P.months, debByShort, totalLoans);
+  // Delta nyata "vs bln lalu": bandingkan bulan berjalan vs bulan sebelumnya pada skeleton.
+  // null = tidak ada pembanding (bulan lalu belum ada file) → jangan tampilkan angka palsu.
+  const realDelta = (series) => {
+    if (!series || series.length < 2) return null;
+    const cur = series[series.length - 1].nilai, prev = series[series.length - 2].nilai;
+    if (prev == null || prev === 0) return null;
+    return (cur - prev) / prev * 100;
+  };
 
   // Deduplikasi per CIF: satu debitur bisa punya >1 rekening di LW321
   const cifMapT10 = {};
@@ -295,9 +244,9 @@ function buildModel(list, periode, uploadHistory) {
   const top10 = Object.values(cifMapT10).sort((a,b)=>b.dpd-a.dpd).slice(0,10);
 
   const ringkasanEW = [
-    { label:"Risiko Tinggi", value:tier.tinggi, color:C.red,   pct: totalDeb?tier.tinggi/totalDeb*100:0 },
-    { label:"Risiko Sedang", value:tier.sedang, color:C.amber, pct: totalDeb?tier.sedang/totalDeb*100:0 },
-    { label:"Risiko Rendah", value:tier.rendah, color:C.green, pct: totalDeb?tier.rendah/totalDeb*100:0 },
+    { label:"Risiko Tinggi", value:tier.tinggi, color:C.red,   pct: totalLoans?tier.tinggi/totalLoans*100:0 },
+    { label:"Risiko Sedang", value:tier.sedang, color:C.amber, pct: totalLoans?tier.sedang/totalLoans*100:0 },
+    { label:"Risiko Rendah", value:tier.rendah, color:C.green, pct: totalLoans?tier.rendah/totalLoans*100:0 },
   ];
 
   const groupBy = (keyFn) => {
@@ -314,13 +263,13 @@ function buildModel(list, periode, uploadHistory) {
     const nplU = os?osT/os*100:0;
     return { kode:u.kode, nama:u.nama, label:`${u.nama}`, deb:it.length, osJt:os,
       npl:nplU, ckpn:sum(it,d=>d.osJt*COV[d.kol])*f, tinggi:it.filter(d=>d.tier==="tinggi").length,
-      recovery:clamp(Math.round(92-nplU*2.6),55,95) };
+      recovery:0 }; // recovery tidak ada di LW321 → 0 (butuh sumber data Recovery tersendiri)
   }); // urutan mengikuti UKER array (KANCA → KCP → Unit)
 
   const gA = groupBy(d=>d.aoId);
   const perAO = Object.values(gA).map(it=>{
     const a = it[0];
-    return { nama:a.ao, uker:a.ukerNama, pn:a.pn||"", deb:it.length, osJt:sum(it,d=>d.osJt)*f,
+    return { nama:a.ao, aoId:a.aoId, kodeUker:a.uker, uker:a.ukerNama, pn:a.pn||"", deb:it.length, osJt:sum(it,d=>d.osJt)*f,
       tinggi:it.filter(d=>d.tier==="tinggi").length,
       actionTotal:it.filter(d=>d.hasAction).length,
       actionSelesai:it.filter(d=>d.resolved).length,
@@ -334,87 +283,95 @@ function buildModel(list, periode, uploadHistory) {
   const gSeg = groupBy(d=>d.segment);
   const perSegment = ["Mikro","Kecil","Menengah"].filter(s=>gSeg[s]).map(s=>({ segment:s, osJt:sum(gSeg[s],d=>d.osJt)*f, deb:gSeg[s].length }));
 
-  const alasanTinggi = [
-    "DPD melewati batas 90 hari",
-    "Penurunan omzet > 50%, usaha terindikasi bermasalah",
-    "Kolektibilitas memburuk, tunggakan pokok & bunga berlanjut",
-    "Tunggakan angsuran > 3 bulan berturut-turut",
-    "Usaha berhenti / tidak aktif berdasarkan kunjungan lapangan",
-    "Nilai agunan menurun signifikan di bawah outstanding",
-  ];
-  const alasanSedang = [
-    "DPD 1–90 hari, perlu monitoring & kunjungan rutin",
-    "Saldo rekening menurun signifikan dalam 3 bulan terakhir",
-    "Frekuensi transaksi debit-kredit menurun > 40%",
-    "Penurunan saldo rata-rata rekening koran",
-    "Keterlambatan pembayaran angsuran berulang",
-    "Omzet usaha terindikasi turun 20–50%",
-  ];
-  const alasanRendah = [
-    "Pembayaran angsuran rutin & tepat waktu — kondisi lancar",
-    "Saldo rekening stabil, tidak ada anomali mutasi",
-    "Mutasi rekening aktif & normal sesuai pola usaha",
-    "Aktivitas usaha berjalan baik, tidak ada indikasi masalah",
-  ];
-  const mkAlertTime = (i) => {
-    const h = String(Math.max(7, 17 - Math.floor(i/2))).padStart(2,"0");
-    const mn = String(55 - (i*7)%56).padStart(2,"0");
-    return `${P.date} ${h}:${mn}`;
+  // Alert dari data asli: fakta per debitur (Kol, DPD, tunggakan, restruk). Tanpa narasi/jam karangan.
+  // "time" = tanggal data (snapshot), bukan jam fiktif.
+  const alasanFakta = (d) => {
+    const parts = [`Kol ${d.kol}`, `DPD ${d.dpd} hari`];
+    if ((d.tunggakanTotal||0) > 0) parts.push(`tunggakan ${fJt(d.tunggakanTotal*f)}`);
+    if (d.flagRestruk === 'Y')     parts.push('restrukturisasi');
+    return parts.join(' · ');
   };
   const topTinggi = [...list].filter(d=>d.tier==="tinggi").sort((a,b)=>b.dpd-a.dpd).slice(0,8);
   const topSedang = [...list].filter(d=>d.tier==="sedang").sort((a,b)=>b.dpd-a.dpd).slice(0,6);
-  const topRendah = [...list].filter(d=>d.tier==="rendah").sort((a,b)=>b.osJt-a.osJt).slice(0,4);
   const alerts = [
-    ...topTinggi.map((d,i)=>({ level:"tinggi", text:`Debitur ${d.nama} (CIF ${d.cif}) — ${alasanTinggi[i%alasanTinggi.length]} · DPD ${d.dpd} hari`, time:mkAlertTime(i) })),
-    ...topSedang.map((d,i)=>({ level:"sedang", text:`Debitur ${d.nama} (CIF ${d.cif}) — ${alasanSedang[i%alasanSedang.length]} · DPD ${d.dpd} hari`, time:mkAlertTime(i+8) })),
-    ...topRendah.map((d,i)=>({ level:"rendah", text:`Debitur ${d.nama} (CIF ${d.cif}) — ${alasanRendah[i%alasanRendah.length]}`, time:mkAlertTime(i+14) })),
+    ...topTinggi.map(d=>({ level:"tinggi", text:`Debitur ${d.nama} (CIF ${d.cif}) — ${alasanFakta(d)}`, time:P.date })),
+    ...topSedang.map(d=>({ level:"sedang", text:`Debitur ${d.nama} (CIF ${d.cif}) — ${alasanFakta(d)}`, time:P.date })),
   ];
 
-  const jenisFor = (d,i)=> d.tier==="tinggi" ? (i%2?"Restrukturisasi":"Kunjungan & Negosiasi")
-    : (i%2?"Reminder & Monitoring":"Surat Peringatan 1");
-  const actionPlans = list.filter(d=>d.hasAction).sort((a,b)=>b.osJt-a.osJt).slice(0,40).map((d,i)=>({
-    tgl:`${20+(i%9)}/05/2026`, cif:d.cif, nama:d.nama, ao:d.pn?`${d.pn} – ${d.ao}`:d.ao, kol:d.kol,
-    jenis:jenisFor(d,i), target:`${10+(i%18)}/06/2026`,
-    status:d.resolved?"selesai":"in_progress", hasil:d.resolved?"Debitur konfirmasi membaik":"Dalam proses tindak lanjut",
-  }));
+  const actionPlans = [];
 
   const ckpnDebitur = [...list].filter(d=>d.kol!=="1").sort((a,b)=>b.osJt*COV[b.kol]-a.osJt*COV[a.kol]).slice(0,10).map(d=>{
     const ex=d.osJt*COV[d.kol]*f; const sv=d.hasAction?d.osJt*(COV[d.kol]-COV[BETTER[d.kol]||d.kol])*f:0;
     return { nama:d.nama, osJt:d.osJt*f, kol:d.kol, ckpn:ex, saving:sv, pct: ex?sv/ex*100:0 };
   });
 
-  const ser12 = (cur,pat)=>pat.map((p,i)=>({ bln:P.months12[i], nilai:+(cur*p).toFixed(3) }));
-
-  const realisasiPctArr = [0.09,0.11,0.10,0.08,0.12,0.09,0.10,0.11,0.08,0.10,0.09,0.12,0.10];
-  const realisasiPerUker = perUker.map((u,i)=>({ kode:u.kode, nama:u.nama, realisasiJt:Math.round(u.osJt*realisasiPctArr[i%realisasiPctArr.length]) }));
-  const realisasiJt = realisasiPerUker.reduce((s,u)=>s+u.realisasiJt,0);
-  const nettDisbursed = Math.round(realisasiJt - totalOsJt * 0.072);
+  // Realisasi baru & Nett Disbursed TIDAK ada di file LW321 → tidak dikarang (butuh sumber data tersendiri).
+  const realisasiPerUker = perUker.map(u => ({ kode:u.kode, nama:u.nama, realisasiJt:0 }));
+  const realisasiJt = 0;
+  const nettDisbursed = 0;
 
   perUker.filter(u=>u.npl>4.5).slice(0,4).forEach(u=>{
-    alerts.push({ level:"sedang", tag:"alertOS", text:`Unit ${u.nama} — Estimasi penurunan outstanding > 10% (bulan ini vs bulan lalu) · OS: ${fJt(u.osJt)}`, time:mkAlertTime(alerts.length) });
+    alerts.push({ level:"sedang", tag:"alertOS", text:`Unit ${u.nama} — NPL ${fPct(u.npl)} · ${u.tinggi} debitur risiko tinggi · OS: ${fJt(u.osJt)}`, time:P.date });
   });
   perAO.filter(a=>a.tinggi>=3).slice(0,3).forEach(a=>{
-    alerts.push({ level:"sedang", tag:"alertOS", text:`${a.pn||""} – ${a.nama} — Estimasi penurunan outstanding RM/Mantri > 15% · OS: ${fJt(a.osJt)}`, time:mkAlertTime(alerts.length) });
+    alerts.push({ level:"sedang", tag:"alertOS", text:`${a.pn||""} – ${a.nama} — ${a.tinggi} debitur risiko tinggi · OS: ${fJt(a.osJt)}`, time:P.date });
   });
 
-  const trendCKPN_raw    = ser(ckpnExisting/1000, PAT_CKPN);
-  const trendTunggakan_raw = realH
-    ? uploadHistory.map(u=>({ bln:u.periodeLabel, nilai:+(u.totalTunggakanJt/1000).toFixed(3) }))
-    : ser(tunggakanJt/1000, PAT_TUNGG);
-  const trendTunggakan12 = realH
-    ? uploadHistory.map(u=>({ bln:u.periodeLabel, nilai:+(u.totalTunggakanJt/1000).toFixed(3) }))
-    : ser12(tunggakanJt/1000, PAT_TUNGG_12);
-  const trendData = buildTrendData(periode, trendCKPN_raw, trendTunggakan_raw, trendOS_raw, npl);
+  // Restrukturisasi dari LW321 (FLAG RESTRUK = 'Y')
+  const listRestruk     = list.filter(d => d.flagRestruk === 'Y');
+  const countRestrukLW  = listRestruk.length;
+  const osRestrukJt     = sum(listRestruk, d => d.osJt) * f;
+  const restrukPerKol   = ['1','2A','2B','3','4','5'].map(k => {
+    const items = listRestruk.filter(d => d.kol === k);
+    return { kol: k, count: items.length, osJt: sum(items, d => d.osJt) * f };
+  }).filter(k => k.count > 0);
+  const topRestruk      = [...listRestruk].sort((a, b) => b.osJt - a.osJt).slice(0, 10).map(d => ({
+    nama: d.nama, cif: d.cif, kol: d.kol, osJt: d.osJt * f, dpd: d.dpd, ukerNama: d.ukerNama,
+  }));
+
+  const trendTunggakan_raw = skeleton(P.months,   tunggByShort, liveTungg);
+  const trendTunggakan12   = skeleton(P.months12, tunggByShort, liveTungg);
+
+  // Tampilan "Bulan Ini" (harian): kerangka semua tanggal 1..hari ini, 0 bila tanggal itu belum ada file
+  const [pMon, pYr] = String(periode || '').split(' ');
+  const pBi = _BNAMES.indexOf(pMon), pYrNum = parseInt(pYr);
+  const dayTotals = {}; // tanggal (1-31) -> upload di tanggal itu (yang terakhir menang, uploadHistoryAll ASC)
+  (uploadHistoryAll || []).filter(u => u.periodeLabel === periode).forEach(u => {
+    const dd = parseInt(String(u.tglFile || '').split('-')[2]);
+    if (dd) dayTotals[dd] = u;
+  });
+  let dailySkeleton = [];
+  if (pBi !== -1 && !isNaN(pYrNum)) {
+    const nowD = new Date();
+    const isCurMonth = nowD.getMonth() === pBi && nowD.getFullYear() === pYrNum;
+    const lastDay = isCurMonth ? nowD.getDate() : new Date(pYrNum, pBi + 1, 0).getDate();
+    // Titik awal: tanggal terakhir bulan kemarin sebagai baseline (nilainya = upload terakhir bulan itu).
+    const prevBi = (pBi + 11) % 12, prevYr = pBi === 0 ? pYrNum - 1 : pYrNum;
+    const prevLabel = `${_BNAMES[prevBi]} ${prevYr}`;
+    let prevLast = null;
+    (uploadHistoryAll || []).filter(u => u.periodeLabel === prevLabel).forEach(u => {
+      if (!prevLast || String(u.tglFile) > String(prevLast.tglFile)) prevLast = u;
+    });
+    const lastDayPrev = new Date(prevYr, prevBi + 1, 0).getDate();
+    dailySkeleton.push({ label: `${lastDayPrev} ${_BNAMES[prevBi]}`, u: prevLast });
+    for (let d = 1; d <= lastDay; d++) dailySkeleton.push({ label: `${d} ${pMon}`, u: dayTotals[d] || null });
+  }
+  const dailySel = (sel) => dailySkeleton.map(x => ({ bln: x.label, nilai: x.u ? +(sel(x.u)/1000).toFixed(3) : 0, tipe: "harian" }));
+  const realBulanIniTungg = dailySel(u => u.totalTunggakanJt || 0);
+  const realBulanIniOS    = dailySel(u => u.totalOsJt || 0);
+  // "Bulan Ini" tersedia selama ada setidaknya satu upload LW321 di periode yang dipilih —
+  // tidak harus bulan kalender sekarang (agar tetap muncul meski periode = bulan lalu).
+  const trendData = { isCurrentMonth: dailySkeleton.some(x => x.u !== null) };
 
   return {
     P, totalDeb, totalOsJt, tier, kol, npl, ckpnExisting, ckpnAfter, ckpnSaving, savingPct,
     tunggakanJt, totalTunggakanAll,
     trendTunggakan: trendTunggakan_raw,
-    trendCKPN: trendCKPN_raw,
     trendTunggakan12,
-    trendCKPN12: ser12(ckpnExisting/1000, PAT_CKPN_12),
     trendData,
-    deltas:{ os:delta(PAT_OS), deb:delta(PAT_DEB), ckpn:delta(PAT_CKPN) },
+    realBulanIniTungg, realBulanIniOS,
+    countRestrukLW, osRestrukJt, restrukPerKol, topRestruk,
+    deltas:{ os:realDelta(trendOS_raw), deb:realDelta(trendDeb_raw) },
     top10, ringkasanEW, perUker, perAO, perSektor, perSegment, alerts, actionPlans, ckpnDebitur,
     realisasiJt, nettDisbursed, realisasiPerUker,
   };
@@ -423,7 +380,6 @@ function buildModel(list, periode, uploadHistory) {
 const risikoColor = { tinggi:C.red, sedang:C.amber, rendah:C.green };
 const risikoBg    = { tinggi:C.redLt, sedang:C.amberLt, rendah:C.greenLt };
 const risikoLabel = { tinggi:"Risiko Tinggi", sedang:"Risiko Sedang", rendah:"Risiko Rendah" };
-const skorColor   = (s)=> s<60?C.kpiRed : s<80?C.kpiAmber : C.kpiGreen;
 const statusLabel = { in_progress:"In Progress", selesai:"Selesai" };
 const card = { background:C.white, border:`1px solid ${C.border}`, borderRadius:12, padding:14, boxShadow:"0 1px 2px rgba(16,24,40,.04)" };
 
@@ -435,9 +391,6 @@ const CardTitle = ({ children, right }) => (
 );
 const Badge = ({ level }) => (
   <span style={{ display:"inline-block", padding:"2px 10px", borderRadius:20, background:risikoBg[level], color:risikoColor[level], fontSize:12, fontWeight:600 }}>{risikoLabel[level]}</span>
-);
-const SkorPill = ({ s }) => (
-  <span style={{ display:"inline-block", minWidth:30, textAlign:"center", padding:"2px 8px", borderRadius:12, background:skorColor(s), color:"#fff", fontSize:11, fontWeight:700 }}>{s}</span>
 );
 const KpiCard = ({ icon, color, label, prefix, value, sub, subColor, big }) => (
   <div style={{ ...card, padding: big?"18px 20px":"12px 14px", display:"flex", flexDirection:"column", minWidth:0 }}>
@@ -514,17 +467,29 @@ const TrendChart = ({ data, color=C.kpiBlue, infoLabel }) => {
     if (!data[index] || data[index].tipe === "harian") return null;
     return <text x={x} y={y-7} textAnchor="middle" fontSize={9.5} fill={C.textMd} fontWeight={600}>{fMilV(value)}</text>;
   };
+  // Tick bulanan: nama bulan + tahun 4-digit di baris kedua, agar "Mei '26" tak terbaca seperti tanggal "26 Mei".
+  // Mode harian ("5 Mei") tidak punya apostrof → tampil satu baris apa adanya.
+  const MonthTick = ({ x, y, payload }) => {
+    const [mon, yy] = String(payload?.value || "").split(" '");
+    return (
+      <g transform={`translate(${x},${y})`}>
+        <text x={0} y={0} dy={11} textAnchor="middle" fontSize={9.5} fill={C.gray}>{mon}</text>
+        {yy && <text x={0} y={0} dy={22} textAnchor="middle" fontSize={8} fill={C.gray}>{`20${yy}`}</text>}
+      </g>
+    );
+  };
+  const expandYr = (l) => String(l).replace(/'(\d{2})$/, "20$1"); // "Mei '26" → "Mei 2026"
   return (
     <div style={{ position:"relative" }}>
       {infoLabel && <div style={{ position:"absolute", right:0, top:-2, fontSize:10.5, color:C.gray, fontWeight:500, zIndex:1 }}>{infoLabel}</div>}
       <ResponsiveContainer width="100%" height={170}>
         <LineChart data={data} margin={{ top:22, right:16, left:-4, bottom:0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#EEF1F5" vertical={false} />
-          <XAxis dataKey="bln" tick={{ fontSize:9.5, fill:C.gray }} tickLine={false} axisLine={{ stroke:C.border }}
-            interval="preserveStartEnd" />
+          <XAxis dataKey="bln" tick={<MonthTick />} tickLine={false} axisLine={{ stroke:C.border }}
+            height={30} interval="preserveStartEnd" />
           <YAxis tick={{ fontSize:10.5, fill:C.gray }} tickLine={false} axisLine={false} domain={[0,top]} tickFormatter={(v)=>v+" M"} width={42} />
-          <Tooltip formatter={(v)=>[fMilV(v),"Nilai"]} labelFormatter={(l)=>l} />
-          <Line type="monotone" dataKey="nilai" stroke={color} strokeWidth={2} dot={<CustomDot />} activeDot={{ r:5 }}>
+          <Tooltip formatter={(v)=>[fMilV(v),"Nilai"]} labelFormatter={expandYr} />
+          <Line type="monotone" dataKey="nilai" stroke={color} strokeWidth={2} dot={<CustomDot />} activeDot={{ r:5 }} isAnimationActive={false}>
             <LabelList content={<CustomLabel />} />
           </Line>
         </LineChart>
@@ -539,7 +504,7 @@ const BarH = ({ data, dataKey, nameKey, color=C.kpiBlue, fmt, height, onBarClick
       <XAxis type="number" tick={{ fontSize:10, fill:C.gray }} tickFormatter={fmt} axisLine={false} tickLine={false} />
       <YAxis type="category" dataKey={nameKey} width={116} tick={{ fontSize:11, fill:C.textMd }} axisLine={false} tickLine={false} />
       <Tooltip formatter={(v)=>[fmt?fmt(v):v]} />
-      <Bar dataKey={dataKey} fill={color} radius={[0,4,4,0]} maxBarSize={16}
+      <Bar dataKey={dataKey} fill={color} radius={[0,4,4,0]} maxBarSize={16} isAnimationActive={false}
         onClick={onBarClick ? (entry) => onBarClick(entry) : undefined}
         style={onBarClick ? { cursor:"pointer" } : {}}>
         <LabelList dataKey={dataKey} position="right" formatter={fmt} style={{ fontSize:9.5, fill:C.textMd, fontWeight:600 }} />
@@ -547,14 +512,16 @@ const BarH = ({ data, dataKey, nameKey, color=C.kpiBlue, fmt, height, onBarClick
     </BarChart>
   </ResponsiveContainer>
 );
-const BarV = ({ data, dataKey, nameKey, color=C.kpiBlue, fmt, height=205 }) => (
+const BarV = ({ data, dataKey, nameKey, color=C.kpiBlue, fmt, height=205, onBarClick }) => (
   <ResponsiveContainer width="100%" height={height}>
     <BarChart data={data} margin={{ top:14, right:10, left:-6, bottom:0 }}>
       <CartesianGrid strokeDasharray="3 3" stroke="#EEF1F5" vertical={false} />
       <XAxis dataKey={nameKey} tick={{ fontSize:10, fill:C.gray }} tickLine={false} axisLine={{ stroke:C.border }} interval={0} />
       <YAxis tick={{ fontSize:10, fill:C.gray }} tickFormatter={fmt} axisLine={false} tickLine={false} width={46} />
       <Tooltip formatter={(v)=>[fmt?fmt(v):v]} />
-      <Bar dataKey={dataKey} fill={color} radius={[5,5,0,0]} maxBarSize={48} />
+      <Bar dataKey={dataKey} fill={color} radius={[5,5,0,0]} maxBarSize={48} isAnimationActive={false}
+        onClick={onBarClick ? (entry)=>onBarClick(entry) : undefined}
+        style={onBarClick ? { cursor:"pointer" } : {}} />
     </BarChart>
   </ResponsiveContainer>
 );
@@ -587,41 +554,77 @@ const Tabel = ({ headers, rows, colW, stickyHeader, onRowClick }) => (
     </table>
   </div>
 );
-const SubFilter = ({ children }) => (
-  <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap", alignItems:"center" }}>{children}</div>
-);
 
 
-function DashboardPinca({ m, go }) {
+function DashboardPinca({ m, go, goKinerjaDebitur, ckpnData, recPhData }) {
   const w = useWindowWidth();
   const kpiCols   = w >= 1280 ? "repeat(6,1fr)" : w >= 900 ? "repeat(3,1fr)" : "repeat(2,1fr)";
   const chartsRow = w >= 1100 ? "1fr 1fr 1fr" : w >= 720 ? "1fr 1fr" : "1fr";
   const [blnTungg, setBlnTungg] = useState("6 Bulan");
   const [blnCKPN,  setBlnCKPN]  = useState("6 Bulan");
-  const [sortTop10, setSortTop10] = useState("dpd");
-  const top10Sorted = [...m.top10].sort((a,b)=> sortTop10==="os" ? b.osJt-a.osJt : b.dpd-a.dpd);
+  const [top10Sort, setTop10Sort] = useState("default"); // default(=DPD terbesar) | os-desc | os-asc | dpd-desc | dpd-asc
+  const top10Sorted = top10Sort==="os-desc" ? [...m.top10].sort((a,b)=>b.osJt-a.osJt)
+                    : top10Sort==="os-asc"  ? [...m.top10].sort((a,b)=>a.osJt-b.osJt)
+                    : top10Sort==="dpd-asc" ? [...m.top10].sort((a,b)=>a.dpd-b.dpd)
+                    : [...m.top10].sort((a,b)=>b.dpd-a.dpd); // default & dpd-desc
+  // Helper gaya tabel terbaru (header navy + baris filter di bawah header)
+  const t10Navy = (align="left")=>({ padding:"0 12px", height:34, lineHeight:"34px", background:`#${M_NAVY}`, color:"#fff", fontWeight:700, fontSize:10, textTransform:"uppercase", textAlign:align, whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,.12)" });
+  const t10Filt = { padding:"5px 7px", background:C.grayLt, borderBottom:`1px solid ${C.border}` };
+  const t10Sel  = { width:"100%", padding:"3px 4px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.textMd, cursor:"pointer", boxSizing:"border-box" };
+  const t10Opts = [{ value:"",label:"Default" },{ value:"desc",label:"Terbesar" },{ value:"asc",label:"Terkecil" }];
+  const t10OsVal  = top10Sort==="os-desc"?"desc":top10Sort==="os-asc"?"asc":"";
+  const t10DpdVal = top10Sort==="dpd-desc"?"desc":top10Sort==="dpd-asc"?"asc":"";
+  const setT10 = (col)=>(e)=>{ const v=e.target.value; setTop10Sort(v?`${col}-${v}`:"default"); };
   const hasBulanIni = m.trendData?.isCurrentMonth;
-  const trendOpts   = hasBulanIni ? ["Bulan Ini","3 Bulan","6 Bulan","12 Bulan"] : ["3 Bulan","6 Bulan","12 Bulan"];
+  const trendOpts     = hasBulanIni ? ["Bulan Ini","3 Bulan","6 Bulan","12 Bulan"] : ["3 Bulan","6 Bulan","12 Bulan"];
+  const trendOptsCKPN = ["3 Bulan","6 Bulan","12 Bulan"]; // CKPN bulanan saja (tidak harian)
   const getTrend = (d6, d12, bln, dailyKey) => {
-    if (bln === "Bulan Ini") return (m.trendData[dailyKey] || []).filter(d=>d.tipe==="harian");
+    if (bln === "Bulan Ini") {
+      if (dailyKey === "trendTunggakan") return m.realBulanIniTungg || [];
+      if (dailyKey === "trendOS")        return m.realBulanIniOS    || [];
+      return [];
+    }
     if (bln === "3 Bulan")   return d6.slice(-3);
     if (bln === "12 Bulan")  return d12;
     return d6;
   };
   const row3      = w >= 1150 ? "1.5fr 1fr 1fr" : "1fr";
-  const row4      = w >= 1000 ? "1.3fr 1fr" : "1fr";
-  const up = (x)=>(x>=0?"▲ ":"▼ ")+fPct(Math.abs(x),2)+" vs bln lalu";
+  // Delta nyata; null = belum ada data bulan sebelumnya untuk dibandingkan
+  const up        = (x)=> x==null ? "Belum ada data bln lalu" : (x>=0?"▲ ":"▼ ")+fPct(Math.abs(x),2)+" vs bln lalu";
+  const upColor   = (x)=> x==null ? C.gray : (x>=0?C.green:C.red);
+
+  // --- CKPN dari FILE CKPN (jenis 'ckpn'), BUKAN dari LW321. Kosong/0 bila file CKPN belum diupload. ---
+  const ckpnFile      = !!ckpnData;
+  const ckpnExistingF = ckpnData?.totalCkpnBerjalanJt || 0; // dalam Jt (juta)
+  // Petakan dari tgl_file (YYYY-MM-DD) → "Mei '26" agar cocok dgn P.months, apa pun format periode_label-nya
+  const _shortCkDate = (t) => { const p=String(t||'').split('-'); const mi=parseInt(p[1])-1; return (mi>=0 && _BNAMES[mi]) ? `${_BNAMES[mi]} '${String(p[0]).slice(-2)}` : null; };
+  const ckpnByMonth = {};
+  (ckpnData?.trend || []).forEach(r => { const k = _shortCkDate(r.tgl_file); if (k) ckpnByMonth[k] = +Number(r.nilai||0).toFixed(3); }); // r.nilai sudah dalam Miliar
+  const ckpnTrend6  = (m.P?.months   || []).map(l => ({ bln:l, nilai: ckpnByMonth[l] || 0 }));
+  const ckpnTrend12 = (m.P?.months12 || []).map(l => ({ bln:l, nilai: ckpnByMonth[l] || 0 }));
+  const ckpnBulanIni = (() => {
+    const nowD = new Date(), mi = nowD.getMonth(), yr = nowD.getFullYear(), dv = {};
+    (ckpnData?.trend || []).forEach(r => {
+      const [ty,tm,td] = String(r.tgl_file||'').split('-').map(n=>parseInt(n));
+      if (ty===yr && tm===mi+1 && td) dv[td] = +Number(r.nilai||0).toFixed(3);
+    });
+    const out = []; for (let d=1; d<=nowD.getDate(); d++) out.push({ bln:`${d} ${_BNAMES[mi]}`, nilai: dv[d]||0, tipe:"harian" });
+    return out;
+  })();
+  const _ck1 = ckpnTrend6[ckpnTrend6.length-1]?.nilai, _ck0 = ckpnTrend6[ckpnTrend6.length-2]?.nilai;
+  const ckpnDelta = (ckpnTrend6.length>=2 && _ck0) ? (_ck1 - _ck0)/_ck0*100 : null;
+  const getCkpnTrend = (bln) => bln==="Bulan Ini" ? ckpnBulanIni : bln==="3 Bulan" ? ckpnTrend6.slice(-3) : bln==="12 Bulan" ? ckpnTrend12 : ckpnTrend6;
 
   const KPI_BIG = [
-    { icon:"wallet",  color:C.kpiBlue,   label:"Total Outstanding",       prefix:"Rp", value:fMil(m.totalOsJt).replace("Rp ",""),           sub:up(m.deltas.os),                                     subColor:m.deltas.os>=0?C.green:C.red },
+    { icon:"wallet",  color:C.kpiBlue,   label:"Total Outstanding",       prefix:"Rp", value:fMil(m.totalOsJt).replace("Rp ",""),           sub:up(m.deltas.os),                                     subColor:upColor(m.deltas.os) },
     { icon:"warning", color:C.kpiRed,    label:"Debitur Bermasalah (3-5)",              value:fNum(m.tier.tinggi),                            sub:fPct(m.ringkasanEW[0].pct)+" dari total debitur",    subColor:C.red },
-    { icon:"shield",  color:C.kpiPurple, label:"CKPN Existing",           prefix:"Rp", value:fMil(m.ckpnExisting).replace("Rp ",""),         sub:up(m.deltas.ckpn)+" · potensi hemat "+fMil(m.ckpnSaving).replace("Rp ",""), subColor:C.red },
+    { icon:"shield",  color:C.kpiPurple, label:"CKPN Existing",           prefix:"Rp", value:fMil(ckpnExistingF).replace("Rp ",""),          sub: ckpnFile ? up(ckpnDelta) : "Belum ada file CKPN", subColor: ckpnFile ? upColor(ckpnDelta) : C.gray },
   ];
   const KPI_SMALL = [
     { icon:"thumb",      color:C.kpiGreen,  label:"Realisasi Baru Bln Ini",  prefix:"Rp", value:fMil(m.realisasiJt||0).replace("Rp ",""),        sub:"Pinjaman baru bulan ini",                           subColor:C.green },
     { icon:"download",   color:C.kpiTeal,   label:"Nett Disbursed",          prefix:"Rp", value:fMil(m.nettDisbursed||0).replace("Rp ",""),        sub:"Realisasi dikurangi pelunasan",                     subColor:C.navy },
     { icon:"wallet",     color:C.kpiRed,    label:"Total Tunggakan",         prefix:"Rp", value:fMil(m.totalTunggakanAll||0).replace("Rp ",""),    sub:"Estimasi seluruh tunggakan",                        subColor:C.red },
-    { icon:"users",      color:C.kpiTeal,   label:"Total Debitur",                        value:fNum(m.totalDeb),                                  sub:up(m.deltas.deb),                                    subColor:m.deltas.deb>=0?C.green:C.red },
+    { icon:"users",      color:C.kpiTeal,   label:"Total Debitur",                        value:fNum(m.totalDeb),                                  sub:up(m.deltas.deb),                                    subColor:upColor(m.deltas.deb) },
     { icon:"infoCircle", color:C.kpiAmber,  label:"Debitur Risiko (2A-2B)",               value:fNum(m.tier.sedang),                               sub:fPct(m.ringkasanEW[1].pct)+" dari total",            subColor:C.amber },
     { icon:"thumb",      color:C.kpiGreen,  label:"Debitur Lancar",                        value:fNum(m.tier.rendah),                               sub:fPct(m.ringkasanEW[2].pct)+" dari total",            subColor:C.navy },
   ];
@@ -657,50 +660,60 @@ function DashboardPinca({ m, go }) {
           <TrendChart data={getTrend(m.trendTunggakan, m.trendTunggakan12, blnTungg, "trendTunggakan")} color={C.kpiRed} />
         </div>
         <div style={card}>
-          <CardTitle right={<Select value={blnCKPN} onChange={e=>setBlnCKPN(e.target.value)} options={trendOpts} />}>Trend CKPN</CardTitle>
+          <CardTitle right={<Select value={blnCKPN} onChange={e=>setBlnCKPN(e.target.value)} options={trendOptsCKPN} />}>Trend CKPN</CardTitle>
           <div style={{ fontSize:11, color:C.gray, marginTop:-6, marginBottom:4 }}>(Dalam Miliar Rupiah)</div>
-          <TrendChart data={getTrend(m.trendCKPN, m.trendCKPN12, blnCKPN, "trendCKPN")} color={C.kpiBlue} />
+          <TrendChart data={getCkpnTrend(blnCKPN)} color={C.kpiBlue} />
         </div>
       </div>
 
       <div style={{ display:"grid", gridTemplateColumns:row3, gap:12 }}>
         <div style={{ ...card, padding:0, overflow:"hidden" }}>
-          <div style={{ padding:"14px 16px 0" }}>
-            <CardTitle right={
-              <div style={{ display:"flex", gap:4 }}>
-                {[{ k:"dpd", label:"DPD Tertinggi" },{ k:"os", label:"Outstanding Tertinggi" }].map(opt=>(
-                  <button key={opt.k} onClick={()=>setSortTop10(opt.k)} style={{ padding:"3px 10px", border:`1px solid ${sortTop10===opt.k?C.navy:C.border}`, borderRadius:20, background:sortTop10===opt.k?C.navyLt:C.white, color:sortTop10===opt.k?C.navy:C.gray, fontSize:11, fontWeight:sortTop10===opt.k?700:500, cursor:"pointer" }}>{opt.label}</button>
-                ))}
-              </div>
-            }>Top 10 Debitur Risiko Tinggi</CardTitle>
+          <div style={{ padding:"14px 16px 10px" }}>
+            <CardTitle>Top 10 Debitur Risiko Tinggi</CardTitle>
           </div>
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
               <thead>
-                <tr style={{ background:C.grayLt }}>
-                  {["No","CIF","Nama Debitur","Outstanding","DPD","Kol","Skor"].map((h,i)=>(
-                    <th key={i} style={{ padding:"8px 12px", color:C.gray, fontSize:10.5, fontWeight:600, textTransform:"uppercase", textAlign:i>=4?"center":"left", whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}` }}>{h}</th>
-                  ))}
+                <tr>
+                  <th style={t10Navy("center")}>No</th>
+                  <th style={t10Navy()}>CIF</th>
+                  <th style={t10Navy()}>Nama Debitur</th>
+                  <th style={t10Navy("right")}>Outstanding</th>
+                  <th style={t10Navy("center")}>DPD</th>
+                  <th style={t10Navy("center")}>Kol</th>
+                </tr>
+                <tr>
+                  <th style={t10Filt}></th>
+                  <th style={t10Filt}></th>
+                  <th style={t10Filt}></th>
+                  <th style={t10Filt}><select value={t10OsVal} onChange={setT10("os")} style={t10Sel}>{t10Opts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                  <th style={t10Filt}><select value={t10DpdVal} onChange={setT10("dpd")} style={t10Sel}>{t10Opts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                  <th style={t10Filt}></th>
                 </tr>
               </thead>
               <tbody>
-                {top10Sorted.map((d,i)=>(
-                  <tr key={i} style={{ borderBottom:`1px solid #F1F3F6` }}>
-                    <td style={{ padding:"8px 12px", color:C.gray }}>{i+1}</td>
-                    <td style={{ padding:"8px 12px", color:C.textMd }}>{d.cif}</td>
-                    <td style={{ padding:"8px 12px", color:C.text, fontWeight:500 }}>{d.nama}</td>
-                    <td style={{ padding:"8px 12px", color:C.textMd }}>{fFull(d.osJt)}</td>
-                    <td style={{ padding:"8px 12px", textAlign:"center", color:d.dpd>30?C.red:C.amber, fontWeight:600 }}>{d.dpd}</td>
+                {top10Sorted.map((d,i)=>{
+                  const clickable = !!goKinerjaDebitur;
+                  return (
+                  <tr key={i} onClick={clickable ? ()=>goKinerjaDebitur(d) : undefined}
+                    style={{ background:i%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:clickable?"pointer":"default" }}
+                    onMouseEnter={clickable ? (e=>e.currentTarget.style.filter="brightness(0.97)") : undefined}
+                    onMouseLeave={clickable ? (e=>e.currentTarget.style.filter="none") : undefined}>
+                    <td style={{ padding:"8px 12px", color:C.gray, textAlign:"center" }}>{i+1}</td>
+                    <td style={{ padding:"8px 12px", color:C.textMd, fontFamily:"monospace", fontSize:11.5 }}>{d.cif}</td>
+                    <td style={{ padding:"8px 12px", color:C.text, fontWeight:600 }}>{d.nama}</td>
+                    <td style={{ padding:"8px 12px", color:C.textMd, textAlign:"right" }}>{fFull(d.osJt)}</td>
+                    <td style={{ padding:"8px 12px", textAlign:"center", color:d.dpd>30?C.red:d.dpd>0?C.amber:C.green, fontWeight:700 }}>{d.dpd}</td>
                     <td style={{ padding:"8px 12px", textAlign:"center", color:C.textMd }}>{d.kol}</td>
-                    <td style={{ padding:"8px 12px", textAlign:"center" }}><SkorPill s={d.skor} /></td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
               <tfoot>
-                <tr style={{ background:C.grayLt }}>
+                <tr style={{ background:`#${M_BEIGE}`, borderTop:`1px solid ${C.border}` }}>
                   <td colSpan={3} style={{ padding:"9px 12px", fontWeight:700, color:C.text }}>Total</td>
-                  <td style={{ padding:"9px 12px", fontWeight:700, color:C.text }}>{fFull(top10Sorted.reduce((s,d)=>s+d.osJt,0))}</td>
-                  <td colSpan={3}></td>
+                  <td style={{ padding:"9px 12px", fontWeight:700, color:C.text, textAlign:"right" }}>{fFull(top10Sorted.reduce((s,d)=>s+d.osJt,0))}</td>
+                  <td colSpan={2}></td>
                 </tr>
               </tfoot>
             </table>
@@ -713,11 +726,12 @@ function DashboardPinca({ m, go }) {
           fmtVal={(d)=>`${fNum(d.value)} (${fPct(d.pct)})`} />
 
         <div style={{ ...card, display:"flex", flexDirection:"column" }}>
-          <CardTitle>Potensi Penghematan CKPN</CardTitle>
+          <CardTitle right={<span style={{ fontSize:10, fontWeight:700, color:C.amber, background:C.amberLt, padding:"2px 8px", borderRadius:10, letterSpacing:.3 }}>ESTIMASI</span>}>Potensi Penghematan CKPN</CardTitle>
+          <div style={{ fontSize:11, color:C.gray, marginTop:-6, marginBottom:10 }}>Simulasi berbasis kolektibilitas LW321 (bukan dari file CKPN)</div>
           <div style={{ flex:1, display:"flex", flexDirection:"column", justifyContent:"center", gap:18 }}>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
               {[
-                { l:"CKPN Existing", v:fMil(m.ckpnExisting).replace("Rp ",""), c:C.text },
+                { l:"CKPN Existing (est.)", v:fMil(m.ckpnExisting).replace("Rp ",""), c:C.text },
                 { l:"CKPN Setelah Action Plan", v:fMil(m.ckpnAfter).replace("Rp ",""), c:C.navy },
                 { l:"Potensi Penghematan", v:fMil(m.ckpnSaving).replace("Rp ",""), c:C.green, extra:fPct(m.savingPct) },
               ].map((x,i)=>(
@@ -731,7 +745,7 @@ function DashboardPinca({ m, go }) {
             </div>
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
               {[
-                { l:"CKPN Existing", val:m.ckpnExisting, pct:100, c:C.kpiPurple },
+                { l:"CKPN Existing (est.)", val:m.ckpnExisting, pct:100, c:C.kpiPurple },
                 { l:"CKPN Setelah Action Plan", val:m.ckpnAfter, pct: m.ckpnExisting? m.ckpnAfter/m.ckpnExisting*100 : 0, c:C.kpiBlue },
               ].map((b,i)=>(
                 <div key={i}>
@@ -755,49 +769,100 @@ function DashboardPinca({ m, go }) {
         </div>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:row4, gap:12 }}>
-        <div style={{ ...card, padding:0, overflow:"hidden" }}>
-          <div style={{ padding:"14px 16px 0" }}><CardTitle>Aktivitas Action Plan Terbaru</CardTitle></div>
-          <div style={{ overflowX:"auto" }}>
-            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
-              <thead>
-                <tr style={{ background:C.grayLt }}>
-                  {["Tgl Input","CIF","Nama Debitur","Kol","Action Plan","PIC","Status"].map((h,i)=>(
-                    <th key={i} style={{ padding:"8px 12px", color:C.gray, fontSize:10.5, fontWeight:600, textTransform:"uppercase", textAlign:"left", whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}` }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {m.actionPlans.slice(0,5).map((p,i)=>(
-                  <tr key={i} style={{ borderBottom:`1px solid #F1F3F6` }}>
-                    <td style={{ padding:"8px 12px", color:C.textMd }}>{p.tgl}</td>
-                    <td style={{ padding:"8px 12px", color:C.textMd }}>{p.cif}</td>
-                    <td style={{ padding:"8px 12px", color:C.text, fontWeight:500 }}>{p.nama}</td>
-                    <td style={{ padding:"8px 12px", color:C.textMd }}>{p.kol}</td>
-                    <td style={{ padding:"8px 12px", color:C.textMd }}>{p.jenis}</td>
-                    <td style={{ padding:"8px 12px", color:C.textMd }}>{p.ao}</td>
-                    <td style={{ padding:"8px 12px" }}><span style={{ display:"inline-block", padding:"2px 10px", borderRadius:20, background:p.status==="selesai"?C.greenLt:C.amberLt, color:p.status==="selesai"?C.green:C.amber, fontSize:11.5, fontWeight:600 }}>{statusLabel[p.status]}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {/* ── CKPN Aktual ─────────────────────────────────────────────────── */}
+      {ckpnData && (
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{ height:1, flex:1, background:C.border }} />
+            <div style={{ fontSize:11, fontWeight:700, color:C.gray, letterSpacing:.8, textTransform:"uppercase" }}>
+              Data CKPN Aktual &mdash; {ckpnData.periodeLabel}
+            </div>
+            <div style={{ height:1, flex:1, background:C.border }} />
           </div>
-          <div onClick={()=>go("action")} style={{ textAlign:"center", padding:"10px", borderTop:`1px solid ${C.border}`, color:C.navy, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Lihat Semua</div>
-        </div>
-        <div style={{ ...card, padding:0, overflow:"hidden" }}>
-          <div style={{ padding:"14px 16px 8px" }}><CardTitle>Alert Terbaru</CardTitle></div>
-          <div>
-            {m.alerts.slice(0,5).map((a,i)=>(
-              <div key={i} style={{ display:"flex", gap:10, alignItems:"flex-start", padding:"10px 16px", borderBottom:`1px solid #F1F3F6` }}>
-                <span style={{ color:risikoColor[a.level], flexShrink:0, marginTop:1 }}><Ic n={a.level==="rendah"?"check":"warning"} size={17} /></span>
-                <div style={{ flex:1, fontSize:12.5, color:C.textMd, lineHeight:1.35 }}>{a.text}</div>
-                <div style={{ fontSize:10.5, color:C.gray, whiteSpace:"nowrap", flexShrink:0 }}>{a.time}</div>
+          <div style={{ display:"grid", gridTemplateColumns:w>=1280?"repeat(4,1fr)":w>=720?"repeat(2,1fr)":"1fr", gap:12 }}>
+            <KpiCard icon="shield"  color={C.kpiPurple} label="CKPN Berjalan"         prefix="Rp" value={fMil(ckpnData.totalCkpnBerjalanJt).replace("Rp ","")} sub={`${fNum(ckpnData.totalRows)} debitur`} />
+            <KpiCard icon="clipboard" color={ckpnData.totalBiayaCkpnJt>=0?C.kpiRed:C.kpiGreen} label="Biaya CKPN"
+              prefix="Rp" value={fMil(Math.abs(ckpnData.totalBiayaCkpnJt)).replace("Rp ","")}
+              sub={ckpnData.totalBiayaCkpnJt>=0?"Peningkatan provisi":"Penurunan provisi"} subColor={ckpnData.totalBiayaCkpnJt>=0?C.red:C.green} />
+            <KpiCard icon="warning" color={C.kpiAmber} label="Debitur Restrukturisasi"
+              value={fNum(ckpnData.countRestruk)}
+              sub={`${ckpnData.totalRows?(ckpnData.countRestruk/ckpnData.totalRows*100).toFixed(1):0}% dari total CKPN`} />
+            <KpiCard icon="download" color={C.kpiBlue} label="CKPN Sebelum" prefix="Rp" value={fMil(ckpnData.totalCkpnSebelumJt).replace("Rp ","")} sub="Periode lalu" />
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:w>=900?"1fr 1fr":"1fr", gap:12 }}>
+            {ckpnData.byKol?.length > 0 && (
+              <div style={card}>
+                <CardTitle>CKPN Berjalan per Kolektibilitas (Juta)</CardTitle>
+                <BarH data={ckpnData.byKol.map(d=>({ ...d, nama:`Kol ${d.kol}` }))} dataKey="totalJt" nameKey="nama" color={C.kpiPurple} fmt={(v)=>fJt(v)} />
               </div>
-            ))}
+            )}
+            {ckpnData.trend?.length > 0 && (
+              <div style={card}>
+                <CardTitle>Trend CKPN Berjalan</CardTitle>
+                <div style={{ fontSize:11, color:C.gray, marginTop:-6, marginBottom:4 }}>(Dalam Miliar Rupiah)</div>
+                <TrendChart data={ckpnData.trend} color={C.kpiPurple} />
+              </div>
+            )}
           </div>
-          <div onClick={()=>go("ews")} style={{ textAlign:"center", padding:"10px", borderTop:`1px solid ${C.border}`, color:C.navy, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Lihat Semua Alert</div>
         </div>
-      </div>
+      )}
+
+      {/* ── Recovery PH ─────────────────────────────────────────────────── */}
+      {recPhData && (
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{ height:1, flex:1, background:C.border }} />
+            <div style={{ fontSize:11, fontWeight:700, color:C.gray, letterSpacing:.8, textTransform:"uppercase" }}>
+              Recovery PH &mdash; {recPhData.periodeLabel}
+            </div>
+            <div style={{ height:1, flex:1, background:C.border }} />
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:w>=1280?"repeat(4,1fr)":w>=720?"repeat(2,1fr)":"1fr", gap:12 }}>
+            <KpiCard icon="wallet"    color={C.kpiBlue}   label="Outstanding Recovery"  prefix="Rp" value={fMil(recPhData.totalOsJt).replace("Rp ","")}    sub={`${fNum(recPhData.totalRows)} debitur`} />
+            <KpiCard icon="clipboard" color={C.kpiPurple} label="Target Recovery PH"    prefix="Rp" value={fMil(recPhData.totalRecPhJt).replace("Rp ","")}  sub={`Bulan ${(recPhData.latestMonth||'').toUpperCase()}`} />
+            <KpiCard icon="download"  color={C.kpiTeal}   label="Realisasi PH"          prefix="Rp" value={fMil(recPhData.totalRealPhJt).replace("Rp ","")} sub="Pengembalian aktual" subColor={C.green} />
+            <KpiCard icon="thumb"     color={recPhData.achievementPct>=100?C.kpiGreen:recPhData.achievementPct>=70?C.kpiAmber:C.kpiRed}
+              label="Achievement Rate" value={`${recPhData.achievementPct.toFixed(1)}%`}
+              sub="Realisasi / Target" subColor={recPhData.achievementPct>=100?C.green:recPhData.achievementPct>=70?C.amber:C.red} />
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:w>=900?"1fr 1fr":"1fr", gap:12 }}>
+            <div style={card}>
+              <CardTitle>Progress Recovery PH</CardTitle>
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {[
+                  { l:"Target Recovery PH", val:recPhData.totalRecPhJt, pct:100, c:C.kpiPurple },
+                  { l:"Realisasi PH",       val:recPhData.totalRealPhJt, pct:recPhData.totalRecPhJt ? Math.min(100, recPhData.totalRealPhJt/recPhData.totalRecPhJt*100) : 0, c:C.kpiTeal },
+                ].map((b,i)=>(
+                  <div key={i}>
+                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:11.5, marginBottom:4 }}>
+                      <span style={{ color:C.gray }}>{b.l}</span>
+                      <span style={{ color:C.text, fontWeight:600 }}>{fMil(b.val)}</span>
+                    </div>
+                    <div style={{ height:12, background:C.grayLt, borderRadius:6, overflow:"hidden" }}>
+                      <div style={{ width:`${b.pct}%`, height:"100%", background:b.c, borderRadius:6, transition:"width .4s ease" }} />
+                    </div>
+                  </div>
+                ))}
+                <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px", borderRadius:8, marginTop:4,
+                  background:recPhData.achievementPct>=100?C.greenLt:recPhData.achievementPct>=70?C.amberLt:C.redLt }}>
+                  <Ic n={recPhData.achievementPct>=100?"thumb":"warning"} size={16} />
+                  <span style={{ fontSize:12.5, color:recPhData.achievementPct>=100?C.green:recPhData.achievementPct>=70?C.amber:C.red }}>Achievement Rate Recovery PH</span>
+                  <span style={{ marginLeft:"auto", fontSize:15, fontWeight:800, color:recPhData.achievementPct>=100?C.green:recPhData.achievementPct>=70?C.amber:C.red }}>
+                    {recPhData.achievementPct.toFixed(1)}%
+                  </span>
+                </div>
+              </div>
+            </div>
+            {recPhData.trend?.length > 0 && (
+              <div style={card}>
+                <CardTitle>Trend Outstanding Recovery</CardTitle>
+                <div style={{ fontSize:11, color:C.gray, marginTop:-6, marginBottom:4 }}>(Dalam Miliar Rupiah)</div>
+                <TrendChart data={recPhData.trend} color={C.kpiTeal} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -874,12 +939,12 @@ function DashboardKepalaUnit({ m, go }) {
       </div>
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
         <div style={{ padding:"12px 16px 0" }}><CardTitle>Debitur Risiko Tinggi di Unit Ini</CardTitle></div>
-        <Tabel headers={["CIF","Nama Debitur","RM/Mantri","Outstanding","DPD","Kol","Skor"]} colW={[88,160,110,110,50,46,56]}
+        <Tabel headers={["CIF","Nama Debitur","RM/Mantri","Outstanding","DPD","Kol"]} colW={[88,160,110,110,50,46]}
           rows={m.top10.slice(0,5).map(d=>[
             d.cif, d.nama, d.ao,
             <span style={{ fontWeight:500 }}>{fJt(d.osJt)}</span>,
             <span style={{ color:C.red, fontWeight:600 }}>{d.dpd}</span>,
-            d.kol, <SkorPill s={d.skor} />,
+            d.kol,
           ])} />
         <div onClick={()=>go("debitur")} style={{ textAlign:"center", padding:"10px", borderTop:`1px solid ${C.border}`, color:C.navy, fontSize:12.5, fontWeight:600, cursor:"pointer" }}>Lihat Semua Debitur</div>
       </div>
@@ -973,16 +1038,18 @@ function DashboardCollection({ m, go }) {
   );
 }
 
-function PortfolioStatus({ m }) {
+function PortfolioStatus({ m, ckpnData, goDebitur }) {
   const w = useWindowWidth();
   const c3 = w >= 1100 ? "1.1fr 1fr 1fr" : w >= 760 ? "1fr 1fr" : "1fr";
+  const ckpnF = ckpnData?.totalCkpnBerjalanJt || 0; // CKPN dari file CKPN (jenis 'ckpn'), BUKAN dari LW321
+  const clickHint = <span style={{ fontSize:10, color:C.gray, fontWeight:500 }}>klik bar → debitur</span>;
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
       <div style={{ display:"grid", gridTemplateColumns: w>=900?"repeat(4,1fr)":"repeat(2,1fr)", gap:10 }}>
         <KpiCard icon="wallet" color={C.kpiBlue} label="Total Outstanding" prefix="Rp" value={fMil(m.totalOsJt).replace("Rp ","")} sub={fNum(m.totalDeb)+" debitur"} subColor={C.navy} />
         <KpiCard icon="thumb" color={C.kpiGreen} label="Debitur Lancar" value={fNum(m.tier.rendah)} sub={fPct(m.ringkasanEW[2].pct)+" dari total"} subColor={C.green} />
         <KpiCard icon="warning" color={C.kpiRed} label="NPL Ratio" value={fPct(m.npl)} sub="Kol 3-5 / Total OS" subColor={C.red} />
-        <KpiCard icon="shield" color={C.kpiPurple} label="CKPN Existing" prefix="Rp" value={fMil(m.ckpnExisting).replace("Rp ","")} sub={"Coverage "+fPct(m.totalOsJt?m.ckpnExisting/m.totalOsJt*100:0)} subColor={C.red} />
+        <KpiCard icon="shield" color={C.kpiPurple} label="CKPN Existing" prefix="Rp" value={fMil(ckpnF).replace("Rp ","")} sub={ckpnData ? "Coverage "+fPct(m.totalOsJt?ckpnF/m.totalOsJt*100:0) : "Belum ada file CKPN"} subColor={ckpnData ? C.red : C.gray} />
       </div>
       <div style={{ display:"grid", gridTemplateColumns:c3, gap:12 }}>
         <div style={card}>
@@ -1001,12 +1068,14 @@ function PortfolioStatus({ m }) {
           </div>
         </div>
         <div style={card}>
-          <CardTitle>Outstanding per Sektor</CardTitle>
-          <BarV data={m.perSektor} dataKey="osJt" nameKey="sektor" color={C.kpiBlue} fmt={(v)=>fMilV(v/1000)} height={200} />
+          <CardTitle right={goDebitur && clickHint}>Outstanding per Sektor</CardTitle>
+          <BarV data={m.perSektor} dataKey="osJt" nameKey="sektor" color={C.kpiBlue} fmt={(v)=>fMilV(v/1000)} height={200}
+            onBarClick={goDebitur ? (e)=>e?.sektor && goDebitur({ sektor:e.sektor }) : undefined} />
         </div>
         <div style={card}>
-          <CardTitle>Outstanding per Segment</CardTitle>
-          <BarV data={m.perSegment} dataKey="osJt" nameKey="segment" color={C.kpiPurple} fmt={(v)=>fMilV(v/1000)} height={200} />
+          <CardTitle right={goDebitur && clickHint}>Outstanding per Segment</CardTitle>
+          <BarV data={m.perSegment} dataKey="osJt" nameKey="segment" color={C.kpiPurple} fmt={(v)=>fMilV(v/1000)} height={200}
+            onBarClick={goDebitur ? (e)=>e?.segment && goDebitur({ segment:e.segment }) : undefined} />
         </div>
       </div>
       <div style={card}>
@@ -1026,7 +1095,7 @@ function EarlyWarning({ m }) {
   const [filter, setFilter] = useState("semua");
   const alerts = filter==="semua" ? m.alerts : filter==="alertOS" ? m.alerts.filter(a=>a.tag==="alertOS") : m.alerts.filter(a=>a.level===filter);
   const ukerAlert = m.perUker.map(u=>({ nama:u.nama, tinggi:u.tinggi })).filter(u=>u.tinggi>0).sort((a,b)=>b.tinggi-a.tinggi);
-  const countByLevel = { tinggi:m.alerts.filter(a=>a.level==="tinggi").length, sedang:m.alerts.filter(a=>a.level==="sedang").length, rendah:m.alerts.filter(a=>a.level==="rendah").length };
+  const countByLevel = { tinggi:m.alerts.filter(a=>a.level==="tinggi").length, sedang:m.alerts.filter(a=>a.level==="sedang").length };
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
@@ -1060,7 +1129,7 @@ function EarlyWarning({ m }) {
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
         <div style={{ padding:"12px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
           <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-            {["semua","tinggi","sedang","rendah","alertOS"].map(lv=>{
+            {["semua","tinggi","sedang","alertOS"].map(lv=>{
               const cnt = lv==="semua" ? m.alerts.length : lv==="alertOS" ? m.alerts.filter(a=>a.tag==="alertOS").length : countByLevel[lv];
               const active = filter===lv;
               const col = lv==="semua" ? C.navy : lv==="alertOS" ? C.kpiTeal : risikoColor[lv];
@@ -1172,67 +1241,160 @@ function groupByCif(list) {
       m[d.cif].totalOsJt += d.osJt;
       if ((KOL_RANK[d.kol]||0) > (KOL_RANK[m[d.cif].kol]||0)) { m[d.cif].kol=d.kol; m[d.cif].tier=d.tier; m[d.cif].skor=d.skor; }
       if (d.dpd > m[d.cif].dpd) m[d.cif].dpd = d.dpd;
+      if (d.flagRestruk === 'Y') m[d.cif].flagRestruk = 'Y';
     }
   });
   return Object.values(m);
 }
 
-function DaftarDebitur({ list }) {
+// Filter multi-pilih ala Excel untuk kolom Unit Kerja. Panel pakai portal + position:fixed
+// agar tidak terpotong oleh container tabel yang overflow:auto.
+function UkerMultiFilter({ options, selected, onToggle, onClear, btnStyle, borderColor }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const btnRef = useRef(null);
+  const [pos, setPos] = useState({ left:0, top:0, width:200 });
+  useEffect(()=>{
+    if(!open) return;
+    const place = ()=>{ const r=btnRef.current?.getBoundingClientRect(); if(r) setPos({ left:r.left, top:r.bottom+4, width:Math.max(r.width,190) }); };
+    place();
+    const onDoc = (e)=>{ if(btnRef.current && !btnRef.current.contains(e.target) && !e.target.closest?.('[data-uker-pop]')) setOpen(false); };
+    const onKey = (e)=>{ if(e.key==='Escape') setOpen(false); };
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return ()=>{ window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place); document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  }, [open]);
+  const label = selected.size===0 ? "Semua Unit"
+    : selected.size===1 ? (options.find(o=>selected.has(o.kode))?.nama || "1 unit")
+    : `${selected.size} unit dipilih`;
+  const filt = options.filter(o=>!q || o.nama.toLowerCase().includes(q.toLowerCase()));
+  const rowSt = { display:"flex", alignItems:"center", gap:6, padding:"4px 5px", fontSize:11.5, color:"#374151", cursor:"pointer", borderRadius:4, whiteSpace:"nowrap" };
+  return (
+    <>
+      <button ref={btnRef} type="button" onClick={()=>setOpen(o=>!o)}
+        style={{ ...btnStyle, textAlign:"left", display:"flex", justifyContent:"space-between", alignItems:"center", gap:4, fontWeight: selected.size?700:400, color: selected.size?"#15396A":btnStyle.color }}>
+        <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}</span>
+        <span style={{ fontSize:8, opacity:.55, flexShrink:0 }}>▼</span>
+      </button>
+      {open && createPortal(
+        <div data-uker-pop style={{ position:"fixed", left:pos.left, top:pos.top, width:pos.width, maxHeight:320, overflowY:"auto", background:"#fff", border:`1px solid ${borderColor}`, borderRadius:7, boxShadow:"0 8px 24px rgba(0,0,0,.18)", zIndex:9999, padding:6 }}>
+          <input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Cari unit…"
+            style={{ width:"100%", padding:"5px 7px", border:`1px solid ${borderColor}`, borderRadius:5, fontSize:11.5, marginBottom:5, boxSizing:"border-box" }} />
+          <div onClick={()=>{ onClear(); }} style={{ ...rowSt, fontWeight:700 }}>
+            <input type="checkbox" readOnly checked={selected.size===0} style={{ cursor:"pointer" }} /> Semua Unit
+          </div>
+          <div style={{ height:1, background:borderColor, margin:"4px 0" }} />
+          {filt.length===0 && <div style={{ padding:"6px 5px", fontSize:11, color:"#9CA3AF" }}>Tidak ada unit</div>}
+          {filt.map(o=>(
+            <div key={o.kode} onClick={()=>onToggle(o.kode)}
+              style={{ ...rowSt, background: selected.has(o.kode)?"#EBF2FF":"transparent" }}>
+              <input type="checkbox" readOnly checked={selected.has(o.kode)} style={{ cursor:"pointer" }} /> {o.nama}
+            </div>
+          ))}
+        </div>, document.body)}
+    </>
+  );
+}
+
+function DaftarDebitur({ list, preset }) {
   const [cari, setCari] = useState("");
   const [kol, setKol] = useState("Semua Kolektibilitas");
   const [risiko, setRisiko] = useState("Semua Risiko");
-  const [selectedUker, setSelectedUker] = useState([]);
-  const [sortBy, setSortBy] = useState("default");
+  const [restruk, setRestruk] = useState("Semua");
+  const [sektor, setSektor]   = useState(preset?.sektor  || "Semua Sektor");
+  const [segment, setSegment] = useState(preset?.segment || "Semua Segmen");
+  const [unitSel, setUnitSel] = useState(new Set()); // kosong = semua unit (multi-pilih ala Excel)
+  const [sortBy, setSortBy] = useState("default"); // default | os-desc | os-asc | dpd-desc | dpd-asc
   const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(12);
   const [expandedCifs, setExpandedCifs] = useState(new Set());
   const [expandedLoan, setExpandedLoan] = useState(null);
-  const perPage = 12;
 
   const ukerList = UKER.filter(u=>list.some(d=>d.uker===u.kode));
+  const sektorList  = useMemo(()=>[...new Set(list.map(d=>d.sektor).filter(Boolean))].sort(), [list]);
+  const segmentList = useMemo(()=>["Mikro","Kecil","Menengah"].filter(s=>list.some(d=>d.segment===s)), [list]);
   const groups = useMemo(()=>groupByCif(list), [list]);
 
   const filtered = groups.filter(g=>{
-    const okCari = !cari || g.nama.toLowerCase().includes(cari.toLowerCase()) || g.cif.toLowerCase().includes(cari.toLowerCase());
-    const okKol  = kol==="Semua Kolektibilitas" || g.loans.some(d=>("Kol "+d.kol)===kol);
-    const okRsk  = risiko==="Semua Risiko" || g.loans.some(d=>risikoLabel[d.tier]===risiko);
-    const okUker = selectedUker.length===0 || g.loans.some(d=>selectedUker.includes(d.uker));
-    return okCari && okKol && okRsk && okUker;
+    const okCari    = !cari || g.nama.toLowerCase().includes(cari.toLowerCase()) || g.cif.toLowerCase().includes(cari.toLowerCase());
+    const okKol     = kol==="Semua Kolektibilitas" || g.loans.some(d=>("Kol "+d.kol)===kol);
+    const okRsk     = risiko==="Semua Risiko" || g.loans.some(d=>risikoLabel[d.tier]===risiko);
+    const okUker    = unitSel.size===0 || g.loans.some(d=>unitSel.has(d.uker));
+    const okRestruk = restruk==="Semua" || (restruk==="Y" ? g.flagRestruk==="Y" : g.flagRestruk!=="Y");
+    const okSektor  = sektor==="Semua Sektor"   || g.loans.some(d=>d.sektor===sektor);
+    const okSegment = segment==="Semua Segmen"  || g.loans.some(d=>d.segment===segment);
+    return okCari && okKol && okRsk && okUker && okRestruk && okSektor && okSegment;
   });
-  const sorted = sortBy==="dpd" ? [...filtered].sort((a,b)=>b.dpd-a.dpd)
-               : sortBy==="os"  ? [...filtered].sort((a,b)=>b.totalOsJt-a.totalOsJt)
+  const sorted = sortBy==="os-desc"  ? [...filtered].sort((a,b)=>b.totalOsJt-a.totalOsJt)
+               : sortBy==="os-asc"   ? [...filtered].sort((a,b)=>a.totalOsJt-b.totalOsJt)
+               : sortBy==="dpd-desc" ? [...filtered].sort((a,b)=>b.dpd-a.dpd)
+               : sortBy==="dpd-asc"  ? [...filtered].sort((a,b)=>a.dpd-b.dpd)
                : filtered;
   const totalPage = Math.max(1, Math.ceil(sorted.length/perPage));
   const pg = Math.min(page, totalPage);
   const shown = sorted.slice((pg-1)*perPage, pg*perPage);
-  const reset = (fn)=>(e)=>{ fn(e.target.value); setPage(1); };
 
   const toggleCif  = (cif) => setExpandedCifs(prev=>{ const n=new Set(prev); n.has(cif)?n.delete(cif):n.add(cif); return n; });
   const toggleLoan = (key) => setExpandedLoan(prev=>prev===key?null:key);
 
   const tdS = (extra={})=>({ padding:"9px 12px", color:C.textMd, ...extra });
-  const inputS = { padding:"7px 10px 7px 32px", border:`1px solid ${C.border}`, borderRadius:7, fontSize:13, background:C.white, color:C.text, width:240 };
+  const onF = (fn)=>(e)=>{ fn(e.target.value); setPage(1); };
+  // Urutan via dropdown di kolom Outstanding/DPD (hanya satu kolom aktif sekaligus)
+  const osSort  = sortBy==="os-desc"?"desc":sortBy==="os-asc"?"asc":"";
+  const dpdSort = sortBy==="dpd-desc"?"desc":sortBy==="dpd-asc"?"asc":"";
+  const setColSort = (col)=>(e)=>{ const v=e.target.value; setSortBy(v?`${col}-${v}`:"default"); setPage(1); };
+  const hSelSt = { width:"100%", padding:"3px 4px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.textMd, cursor:"pointer", boxSizing:"border-box" };
+  const hInpSt = { width:"100%", padding:"3px 6px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.text, boxSizing:"border-box" };
+  const navyTh = (align="left")=>({ height:34, lineHeight:"34px", padding:"0 10px", background:`#${M_NAVY}`, color:"#fff", fontWeight:700, fontSize:10, textTransform:"uppercase", textAlign:align, whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,.12)", userSelect:"none", position:"sticky", top:0, zIndex:5 });
+  const filtTh = { padding:"5px 6px", background:C.grayLt, borderBottom:`1px solid ${C.border}`, position:"sticky", top:34, zIndex:5 };
+  const colW = [88,150,120,110,90,100,110,58,80,72,118];
+  const anyFilter = cari || unitSel.size>0 || kol!=="Semua Kolektibilitas" || risiko!=="Semua Risiko" || restruk!=="Semua" || sektor!=="Semua Sektor" || segment!=="Semua Segmen" || sortBy!=="default";
+  const resetFilters = ()=>{ setCari(""); setUnitSel(new Set()); setKol("Semua Kolektibilitas"); setRisiko("Semua Risiko"); setRestruk("Semua"); setSektor("Semua Sektor"); setSegment("Semua Segmen"); setSortBy("default"); setPage(1); };
+  const toggleUker = (kode)=>{ setUnitSel(prev=>{ const n=new Set(prev); n.has(kode)?n.delete(kode):n.add(kode); return n; }); setPage(1); };
+  const clearUker  = ()=>{ setUnitSel(new Set()); setPage(1); };
+  const sortOpts = [{value:"",label:"Default"},{value:"desc",label:"Terbesar"},{value:"asc",label:"Terkecil"}];
 
   return (
     <div>
-      <SubFilter>
-        <div style={{ position:"relative" }}>
-          <span style={{ position:"absolute", left:9, top:8, color:C.gray }}><Ic n="search" size={16} /></span>
-          <input placeholder="Cari nama atau CIF..." value={cari} onChange={reset(setCari)} style={inputS} />
-        </div>
-        <MultiSelectUnit options={ukerList} selected={selectedUker} onChange={(v)=>{ setSelectedUker(v); setPage(1); }} />
-        <Select value={kol} onChange={reset(setKol)} options={["Semua Kolektibilitas","Kol 1","Kol 2A","Kol 2B","Kol 3","Kol 4","Kol 5"]} />
-        <Select value={risiko} onChange={reset(setRisiko)} options={["Semua Risiko","Risiko Tinggi","Risiko Sedang","Risiko Rendah"]} />
-        <Select value={sortBy} onChange={(e)=>{ setSortBy(e.target.value); setPage(1); }} options={[{ value:"default", label:"Urutan Default" },{ value:"dpd", label:"DPD Tertinggi" },{ value:"os", label:"Outstanding Tertinggi" }]} />
-        <span style={{ marginLeft:"auto", fontSize:13, color:C.gray }}>{fNum(sorted.length)} nasabah</span>
-      </SubFilter>
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
-        <div style={{ overflowX:"auto" }}>
+        <div style={{ padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${C.border}` }}>
+          <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>Daftar Debitur — filter di tiap kolom</div>
+          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+            {anyFilter && <button onClick={resetFilters} style={{ fontSize:12, color:C.navy, background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"4px 10px", cursor:"pointer" }}>Reset Filter</button>}
+            <span style={{ fontSize:12.5, color:C.gray }}>{fNum(sorted.length)} nasabah</span>
+          </div>
+        </div>
+        <div style={{ overflowX:"auto", overflowY:"auto", maxHeight:"66vh" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5, tableLayout:"fixed" }}>
+            <colgroup>{colW.map((cw,i)=><col key={i} style={{ width:cw }} />)}</colgroup>
             <thead>
               <tr>
-                {["CIF","Nama Debitur","Unit Kerja","RM/Mantri Pengelola","Sektor Usaha","Outstanding","Kol","DPD","Skor","Status Risiko"].map((h,i)=>(
-                  <th key={i} style={{ padding:"9px 12px", color:C.gray, fontWeight:600, fontSize:10.5, textTransform:"uppercase", textAlign:"left", width:[88,150,120,110,100,110,46,50,56,120][i], whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}`, background:C.grayLt }}>{h}</th>
-                ))}
+                <th style={navyTh()}>CIF</th>
+                <th style={navyTh()}>Nama Debitur</th>
+                <th style={navyTh()}>Unit Kerja</th>
+                <th style={navyTh()}>RM/Mantri</th>
+                <th style={navyTh()}>Segment</th>
+                <th style={navyTh()}>Sektor Usaha</th>
+                <th style={navyTh("right")}>Outstanding</th>
+                <th style={navyTh("center")}>Kol</th>
+                <th style={navyTh("center")}>Restruk</th>
+                <th style={navyTh("center")}>DPD</th>
+                <th style={navyTh()}>Status Risiko</th>
+              </tr>
+              <tr>
+                <th style={filtTh}></th>
+                <th style={filtTh}><input value={cari} onChange={onF(setCari)} placeholder="Cari nama/CIF…" style={hInpSt} /></th>
+                <th style={filtTh}><UkerMultiFilter options={ukerList} selected={unitSel} onToggle={toggleUker} onClear={clearUker} btnStyle={hSelSt} borderColor={C.border} /></th>
+                <th style={filtTh}></th>
+                <th style={filtTh}><select value={segment} onChange={onF(setSegment)} style={hSelSt}><option>Semua Segmen</option>{segmentList.map(s=><option key={s}>{s}</option>)}</select></th>
+                <th style={filtTh}><select value={sektor} onChange={onF(setSektor)} style={hSelSt}><option>Semua Sektor</option>{sektorList.map(s=><option key={s}>{s}</option>)}</select></th>
+                <th style={filtTh}><select value={osSort} onChange={setColSort("os")} style={hSelSt}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                <th style={filtTh}><select value={kol} onChange={onF(setKol)} style={hSelSt}><option>Semua Kolektibilitas</option><option>Kol 1</option><option>Kol 2A</option><option>Kol 2B</option><option>Kol 3</option><option>Kol 4</option><option>Kol 5</option></select></th>
+                <th style={filtTh}><select value={restruk} onChange={onF(setRestruk)} style={hSelSt}><option>Semua</option><option>Y</option><option>N</option></select></th>
+                <th style={filtTh}><select value={dpdSort} onChange={setColSort("dpd")} style={hSelSt}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                <th style={filtTh}><select value={risiko} onChange={onF(setRisiko)} style={hSelSt}><option>Semua Risiko</option><option>Risiko Tinggi</option><option>Risiko Sedang</option><option>Risiko Rendah</option></select></th>
               </tr>
             </thead>
             <tbody>
@@ -1240,7 +1402,6 @@ function DaftarDebitur({ list }) {
                 const multi = g.loans.length > 1;
                 const cifExp = expandedCifs.has(g.cif);
                 const rows = [];
-                // — baris utama per nasabah (1 baris per CIF) —
                 rows.push(
                   <tr key={g.cif} onClick={()=>{ multi ? toggleCif(g.cif) : toggleLoan(g.cif+"-0"); }}
                     style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}>
@@ -1251,42 +1412,47 @@ function DaftarDebitur({ list }) {
                     </td>
                     <td style={tdS()}>{g.ukerNama}</td>
                     <td style={tdS()}>{g.ao}</td>
+                    <td style={tdS()}>{g.segment}</td>
                     <td style={tdS()}>{g.sektor}</td>
-                    <td style={tdS({ fontWeight:500 })}>{fJt(g.totalOsJt)}</td>
-                    <td style={tdS()}>{g.kol}</td>
-                    <td style={{ padding:"9px 12px", color:g.dpd>30?C.red:g.dpd>0?C.amber:C.green, fontWeight:600 }}>{g.dpd}</td>
-                    <td style={{ padding:"9px 12px" }}><SkorPill s={g.skor} /></td>
+                    <td style={tdS({ fontWeight:500, textAlign:"right" })}>{fJt(g.totalOsJt)}</td>
+                    <td style={tdS({ textAlign:"center" })}>{g.kol}</td>
+                    <td style={{ padding:"9px 12px", textAlign:"center" }}>
+                      {g.flagRestruk === 'Y'
+                        ? <span style={{ fontSize:10.5, fontWeight:700, color:C.amber, background:C.amberLt, padding:"2px 7px", borderRadius:4 }}>Y</span>
+                        : <span style={{ fontSize:10.5, color:C.gray }}>N</span>}
+                    </td>
+                    <td style={{ padding:"9px 12px", textAlign:"center", color:g.dpd>30?C.red:g.dpd>0?C.amber:C.green, fontWeight:600 }}>{g.dpd}</td>
                     <td style={{ padding:"9px 12px" }}><Badge level={g.tier} /></td>
                   </tr>
                 );
-                // — sub-baris: daftar pinjaman (hanya bila multi & expanded) —
                 if (multi && cifExp) {
                   g.loans.forEach((loan, li) => {
                     const lkey = `${g.cif}-${li}`;
                     const lExp = expandedLoan === lkey;
                     rows.push(
-                      <tr key={lkey} onClick={()=>toggleLoan(lkey)}
-                        style={{ background:"#EFF6FF", borderBottom:`1px solid ${C.border}`, cursor:"pointer" }}>
-                        <td style={{ padding:"7px 12px 7px 28px", color:C.navy, fontWeight:500, fontSize:12 }}>
-                          <span style={{ fontSize:10, color:C.gray, marginRight:6 }}>↳</span>Pinjaman {li+1}
-                        </td>
-                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.sektor}</td>
+                      <tr key={lkey} onClick={()=>toggleLoan(lkey)} style={{ background:"#EFF6FF", borderBottom:`1px solid ${C.border}`, cursor:"pointer" }}>
+                        <td style={{ padding:"7px 12px 7px 22px", color:C.navy, fontWeight:500, fontSize:12 }}><span style={{ fontSize:10, color:C.gray, marginRight:6 }}>↳</span>Pinjaman {li+1}</td>
+                        <td></td>
                         <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.ukerNama}</td>
                         <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.ao}</td>
-                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}></td>
-                        <td style={{ padding:"7px 12px", fontWeight:600, color:C.navy, fontSize:12 }}>{fJt(loan.osJt)}</td>
-                        <td style={{ padding:"7px 12px", fontSize:12, color:C.textMd }}>{loan.kol}</td>
-                        <td style={{ padding:"7px 12px", fontSize:12, color:loan.dpd>30?C.red:loan.dpd>0?C.amber:C.green, fontWeight:600 }}>{loan.dpd}</td>
-                        <td style={{ padding:"7px 12px" }}><SkorPill s={loan.skor} /></td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.segment}</td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.sektor}</td>
+                        <td style={{ padding:"7px 12px", fontWeight:600, color:C.navy, fontSize:12, textAlign:"right" }}>{fJt(loan.osJt)}</td>
+                        <td style={{ padding:"7px 12px", fontSize:12, color:C.textMd, textAlign:"center" }}>{loan.kol}</td>
+                        <td style={{ padding:"7px 12px", textAlign:"center" }}>
+                          {loan.flagRestruk === 'Y'
+                            ? <span style={{ fontSize:10, fontWeight:700, color:C.amber, background:C.amberLt, padding:"2px 6px", borderRadius:4 }}>Y</span>
+                            : <span style={{ fontSize:10, color:C.gray }}>N</span>}
+                        </td>
+                        <td style={{ padding:"7px 12px", fontSize:12, color:loan.dpd>30?C.red:loan.dpd>0?C.amber:C.green, fontWeight:600, textAlign:"center" }}>{loan.dpd}</td>
                         <td style={{ padding:"7px 12px" }}><Badge level={loan.tier} /></td>
                       </tr>
                     );
-                    if (lExp) rows.push(<BreakdownRow key={lkey+"-exp"} d={loan} colSpan={10} />);
+                    if (lExp) rows.push(<BreakdownRow key={lkey+"-exp"} d={loan} colSpan={11} />);
                   });
                 }
-                // — breakdown langsung (nasabah single pinjaman) —
                 if (!multi && expandedLoan === g.cif+"-0") {
-                  rows.push(<BreakdownRow key={g.cif+"-exp"} d={g.loans[0]} colSpan={10} />);
+                  rows.push(<BreakdownRow key={g.cif+"-exp"} d={g.loans[0]} colSpan={11} />);
                 }
                 return rows;
               })}
@@ -1297,7 +1463,10 @@ function DaftarDebitur({ list }) {
         {sorted.length>0 && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 16px", borderTop:`1px solid ${C.border}` }}>
             <span style={{ fontSize:12, color:C.gray }}>Menampilkan {(pg-1)*perPage+1}–{Math.min(pg*perPage,sorted.length)} dari {fNum(sorted.length)} nasabah</span>
-            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              <span style={{ fontSize:12, color:C.gray }}>Baris/hal:</span>
+              <input type="text" inputMode="numeric" value={perPage} onChange={e=>{ const v=e.target.value.replace(/\D/g,""); setPerPage(Math.max(1, Math.min(1000, parseInt(v)||12))); setPage(1); }}
+                style={{ width:56, padding:"4px 8px", border:`1px solid ${C.border}`, borderRadius:6, fontSize:12.5, color:C.text, textAlign:"right" }} />
               <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={pg<=1} style={pgBtn(pg<=1)}>‹ Prev</button>
               <span style={{ fontSize:12.5, color:C.textMd }}>Hal {pg} / {totalPage}</span>
               <button onClick={()=>setPage(p=>Math.min(totalPage,p+1))} disabled={pg>=totalPage} style={pgBtn(pg>=totalPage)}>Next ›</button>
@@ -1310,81 +1479,142 @@ function DaftarDebitur({ list }) {
 }
 const pgBtn = (dis)=>({ padding:"5px 12px", border:`1px solid ${C.border}`, borderRadius:6, background:C.white, color:dis?C.gray:C.navy, fontSize:12.5, cursor:dis?"default":"pointer", opacity:dis?.5:1 });
 
-function MultiSelectUnit({ options, selected, onChange }) {
-  const [open, setOpen] = useState(false);
-  useEffect(()=>{
-    const handler = (e)=>{ if (!document.getElementById("msu-drop")?.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", handler);
-    return ()=>document.removeEventListener("mousedown", handler);
-  }, []);
-  const allSelected = selected.length === 0;
-  const label = allSelected ? "Semua Unit" : selected.length === 1 ? options.find(o=>o.kode===selected[0])?.nama : `${selected.length} Unit dipilih`;
-  const toggle = (kode) => {
-    onChange(selected.includes(kode) ? selected.filter(k=>k!==kode) : [...selected, kode]);
-  };
-  return (
-    <div id="msu-drop" style={{ position:"relative" }}>
-      <button onClick={()=>setOpen(o=>!o)} style={{ padding:"6px 10px", border:`1px solid ${selected.length>0?C.navy:C.border}`, borderRadius:7, fontSize:12.5, background:selected.length>0?C.navyLt:C.white, color:selected.length>0?C.navy:C.textMd, cursor:"pointer", display:"flex", alignItems:"center", gap:6, minWidth:148, whiteSpace:"nowrap" }}>
-        <Ic n="building" size={14} />
-        <span style={{ flex:1, textAlign:"left" }}>{label}</span>
-        <Ic n="chevronD" size={13} />
-      </button>
-      {open && (
-        <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, zIndex:200, background:C.white, border:`1px solid ${C.border}`, borderRadius:9, boxShadow:"0 6px 24px rgba(0,0,0,.13)", minWidth:220, maxHeight:320, display:"flex", flexDirection:"column" }}>
-          <div style={{ padding:"8px 10px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:6 }}>
-            <button onClick={()=>onChange([])} style={{ flex:1, padding:"4px 0", fontSize:11.5, border:`1px solid ${C.border}`, borderRadius:6, background:C.white, color:C.navy, cursor:"pointer", fontWeight:600 }}>Semua</button>
-            <button onClick={()=>onChange(options.map(o=>o.kode))} style={{ flex:1, padding:"4px 0", fontSize:11.5, border:`1px solid ${C.border}`, borderRadius:6, background:C.white, color:C.gray, cursor:"pointer" }}>Pilih Semua</button>
-          </div>
-          <div style={{ overflowY:"auto", padding:"6px 0" }}>
-            {options.map(o=>{
-              const checked = selected.includes(o.kode);
-              return (
-                <label key={o.kode} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 12px", cursor:"pointer", background:checked?C.navyLt:"transparent", fontSize:12.5, color:checked?C.navy:C.textMd }}>
-                  <input type="checkbox" checked={checked} onChange={()=>toggle(o.kode)} style={{ accentColor:C.navy, width:14, height:14, cursor:"pointer", flexShrink:0 }} />
-                  <span style={{ flex:1 }}>{o.nama}</span>
-                  <span style={{ fontSize:11, color:C.gray, background:C.grayLt, borderRadius:10, padding:"1px 7px" }}>{o.tipe}</span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ActionPlan({ m, perms }) {
+function ActionPlan({ m, perms, list = [] }) {
   const w = useWindowWidth();
-  const [extra, setExtra] = useState([]);
+  const [dbPlans, setDbPlans] = useState([]);
+  const [loadingAP, setLoadingAP] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ nama:"", jenis:"Kunjungan", target:"", catatan:"" });
-  const plans = [...extra, ...m.actionPlans];
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ cif:"", nama:"", ao:"", aoId:"", kol:"", jenis:"Kunjungan", target:"", catatan:"" });
+  const [suggestions, setSuggestions] = useState([]);
+  const [activeField, setActiveField] = useState(null);
+  const plans = dbPlans;
 
-  const handleTambah = () => {
-    if (!form.nama) return;
-    setExtra([{ tgl:new Date().toLocaleDateString("id-ID"), cif:"-", nama:form.nama, ao:"Demo Mantri 1", kol:"2B",
-      jenis:form.jenis, target:form.target||"-", status:"in_progress", hasil:form.catatan||"-" }, ...extra]);
-    setShowForm(false); setForm({ nama:"", jenis:"Kunjungan", target:"", catatan:"" });
+  useEffect(() => {
+    fetchActionPlans().then(({ data }) => {
+      setDbPlans((data || []).map(r => ({
+        id: r.id, tgl: r.tgl, cif: r.cif || "-", nama: r.nama,
+        ao: r.ao || "-", kol: r.kol || "-", jenis: r.jenis || "-",
+        target: r.target || "-", status: r.status, hasil: r.hasil || "-",
+      })));
+    }).finally(() => setLoadingAP(false));
+  }, []);
+
+  const clearSug = () => { setSuggestions([]); setActiveField(null); };
+
+  // Pool debitur sesuai RM/Mantri yang dipilih: pakai aoId bila dipilih dari saran,
+  // selain itu cocokkan nama RM/Mantri yang diketik. Kalau RM/Mantri kosong → semua debitur.
+  const debiturPool = () => {
+    if (form.aoId) return list.filter(d=>d.aoId===form.aoId);
+    const q = (form.ao||"").toLowerCase().trim();
+    if (q) return list.filter(d=>(d.ao||"").toLowerCase().includes(q));
+    return list;
+  };
+
+  const handleCifChange = (val) => {
+    setForm(f=>({...f, cif:val}));
+    const q = val.toLowerCase().trim();
+    if (q.length >= 2) {
+      const toks = q.split(/\s+/).filter(Boolean);
+      setSuggestions(debiturPool().filter(d=>{ const c=d.cif.toLowerCase(), n=d.nama.toLowerCase(); return c.includes(q) || toks.every(tk=>n.includes(tk)); }).slice(0,8));
+      setActiveField('cif');
+    } else clearSug();
+  };
+
+  const handleNamaChange = (val) => {
+    setForm(f=>({...f, nama:val}));
+    const q = val.toLowerCase().trim();
+    if (q.length >= 2) {
+      const toks = q.split(/\s+/).filter(Boolean);
+      setSuggestions(debiturPool().filter(d=>{ const n=d.nama.toLowerCase(); return toks.every(tk=>n.includes(tk)); }).slice(0,8));
+      setActiveField('nama');
+    } else clearSug();
+  };
+
+  const handleAoChange = (val) => {
+    setForm(f=>({...f, ao:val, aoId:""})); // ketik manual → lepas kunci aoId terpilih
+    if (val.length >= 2) {
+      const q = val.toLowerCase();
+      const seen = new Set();
+      setSuggestions(list.filter(d=>{ if(seen.has(d.aoId)) return false; if(!d.ao.toLowerCase().includes(q)) return false; seen.add(d.aoId); return true; }).slice(0,8));
+      setActiveField('ao');
+    } else clearSug();
+  };
+
+  const selectSug = (d) => {
+    if (activeField === 'ao') {
+      // pilih RM/Mantri → kunci ke aoId-nya & kosongkan debitur agar mengikuti mantri ini
+      setForm(f=>({...f, ao:d.ao, aoId:d.aoId, cif:"", nama:""}));
+    } else {
+      setForm(f=>({...f, cif:d.cif, nama:d.nama, ao:d.ao, aoId:d.aoId, kol:d.kol}));
+    }
+    clearSug();
+  };
+
+  const handleTambah = async () => {
+    if (!form.nama || saving) return;
+    setSaving(true);
+    const today = new Date().toISOString().split('T')[0];
+    const { data, error } = await saveActionPlan({
+      cif: form.cif || null, nama: form.nama,
+      ao: form.ao || null, kol: form.kol,
+      jenis: form.jenis, target: form.target || null,
+      catatan: form.catatan || null, tgl: today,
+    });
+    setSaving(false);
+    if (error) { alert('Gagal menyimpan: ' + error.message); return; }
+    setDbPlans(prev => [{ id:data.id, tgl:data.tgl, cif:data.cif||"-", nama:data.nama, ao:data.ao||"-", kol:data.kol||"-", jenis:data.jenis||"-", target:data.target||"-", status:data.status, hasil:data.hasil||"-" }, ...prev]);
+    setShowForm(false);
+    setForm({ cif:"", nama:"", ao:"", aoId:"", kol:"", jenis:"Kunjungan", target:"", catatan:"" });
+    clearSug();
+  };
+  // Isi/ubah "Hasil" (keterangan hasil tindak lanjut). Status WAJIB ikut dikirim
+  // karena backend meng-UPDATE status & hasil sekaligus.
+  const editHasil = async (p) => {
+    const cur = p.hasil && p.hasil !== "-" ? p.hasil : "";
+    const v = window.prompt(`Hasil tindak lanjut — ${p.nama}:`, cur);
+    if (v === null) return; // batal
+    const val = v.trim();
+    const { data, error } = await updateActionPlan(p.id, { status: p.status, hasil: val || null });
+    if (error) { alert("Gagal menyimpan hasil: " + error.message); return; }
+    setDbPlans(prev => prev.map(x => x.id === p.id ? { ...x, hasil: (data?.hasil) || val || "-" } : x));
   };
   const inputS = { width:"100%", padding:"7px 10px", border:`1px solid ${C.border}`, borderRadius:6, fontSize:13, background:C.white, color:C.text, boxSizing:"border-box" };
+  const sugBox = { position:"absolute", top:"100%", left:0, right:0, zIndex:200, background:C.white, border:`1px solid ${C.border}`, borderRadius:8, boxShadow:"0 4px 16px rgba(0,0,0,.12)", marginTop:2, maxHeight:260, overflowY:"auto" };
+  const sugRow = { padding:"8px 12px", cursor:"pointer", borderBottom:`1px solid ${C.border}`, fontSize:12.5 };
 
   const [cariAP, setCariAP] = useState("");
   const [filterStatus, setFilterStatus] = useState("Semua Status");
   const [filterJenis, setFilterJenis] = useState("Semua Jenis");
   const [filterKolAP, setFilterKolAP] = useState("Semua Kol");
+  const [filterUkerAP, setFilterUkerAP] = useState("Semua Unit");
   const [pageAP, setPageAP] = useState(1);
   const perPageAP = 10;
 
+  // Unit Kerja diturunkan dari debitur (cif → ukerNama), fallback lewat nama RM/Mantri
+  const cifUker = useMemo(()=>{ const o={}; (list||[]).forEach(d=>{ if(d.cif && o[d.cif]===undefined) o[d.cif]=d.ukerNama; }); return o; }, [list]);
+  const aoUker  = useMemo(()=>{ const o={}; (list||[]).forEach(d=>{ if(d.ao && o[d.ao]===undefined) o[d.ao]=d.ukerNama; }); return o; }, [list]);
+  const ukerOf  = (p)=> shortUker(cifUker[p.cif] || aoUker[p.ao] || "");
+
   const jenisOptions = ["Semua Jenis", ...Array.from(new Set(plans.map(p=>p.jenis)))];
   const kolOptions   = ["Semua Kol",   ...Array.from(new Set(plans.map(p=>p.kol))).sort()];
+  const ukerOptions  = ["Semua Unit",  ...Array.from(new Set(plans.map(p=>ukerOf(p)).filter(Boolean))).sort()];
 
   const filteredPlans = plans.filter(p=>{
     const okCari   = p.nama.toLowerCase().includes(cariAP.toLowerCase()) || p.cif?.includes(cariAP);
     const okStatus = filterStatus==="Semua Status" || (filterStatus==="In Progress"?p.status==="in_progress":p.status==="selesai");
     const okJenis  = filterJenis==="Semua Jenis"   || p.jenis===filterJenis;
     const okKol    = filterKolAP==="Semua Kol"     || p.kol===filterKolAP.replace("Kol ","");
-    return okCari && okStatus && okJenis && okKol;
+    const okUker   = filterUkerAP==="Semua Unit"   || ukerOf(p)===filterUkerAP;
+    return okCari && okStatus && okJenis && okKol && okUker;
   });
+  const anyFilterAP = cariAP || filterStatus!=="Semua Status" || filterJenis!=="Semua Jenis" || filterKolAP!=="Semua Kol" || filterUkerAP!=="Semua Unit";
+  const resetAP = ()=>{ setCariAP(""); setFilterStatus("Semua Status"); setFilterJenis("Semua Jenis"); setFilterKolAP("Semua Kol"); setFilterUkerAP("Semua Unit"); setPageAP(1); };
+  const apNavyTh = (align="left")=>({ height:34, lineHeight:"34px", padding:"0 12px", background:`#${M_NAVY}`, color:"#fff", fontWeight:700, fontSize:10, textTransform:"uppercase", textAlign:align, whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,.12)", position:"sticky", top:0, zIndex:5 });
+  const apFiltTh = { padding:"5px 7px", background:C.grayLt, borderBottom:`1px solid ${C.border}`, position:"sticky", top:34, zIndex:5 };
+  const apSel = { width:"100%", padding:"3px 4px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.textMd, cursor:"pointer", boxSizing:"border-box" };
+  const apInp = { width:"100%", padding:"3px 6px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.text, boxSizing:"border-box" };
+  const onFAP = (fn)=>(e)=>{ fn(e.target.value); setPageAP(1); };
   const totalPageAP = Math.max(1, Math.ceil(filteredPlans.length/perPageAP));
   const pgAP = Math.min(pageAP, totalPageAP);
   const shownPlans = filteredPlans.slice((pgAP-1)*perPageAP, pgAP*perPageAP);
@@ -1429,35 +1659,147 @@ function ActionPlan({ m, perms }) {
         <div style={{ ...card, background:C.navyLt }}>
           <div style={{ fontSize:14, fontWeight:600, color:C.navy, marginBottom:12 }}>Tambah Tindak Lanjut Baru</div>
           <div style={{ display:"grid", gridTemplateColumns: w>=700?"1fr 1fr 1fr":"1fr", gap:10, marginBottom:10 }}>
-            <div><div style={{ fontSize:12, color:C.gray, marginBottom:4 }}>Nama Debitur</div><input value={form.nama} onChange={e=>setForm({...form,nama:e.target.value})} placeholder="Nama debitur..." style={inputS} /></div>
+            <div style={{ position:"relative" }}>
+              <div style={{ fontSize:12, color:C.gray, marginBottom:4 }}>CIF</div>
+              <input value={form.cif} onChange={e=>handleCifChange(e.target.value)} onBlur={()=>setTimeout(clearSug,150)} placeholder={form.aoId||form.ao ? "Ketik CIF/nama debitur RM ini…" : "Ketik CIF atau nama..."} style={inputS} autoComplete="off" />
+              {activeField==='cif' && suggestions.length>0 && (
+                <div style={sugBox}>
+                  {suggestions.map((d,i)=>(
+                    <div key={i} style={sugRow} onMouseDown={()=>selectSug(d)} onMouseEnter={e=>e.currentTarget.style.background=C.navyLt} onMouseLeave={e=>e.currentTarget.style.background=C.white}>
+                      <div style={{ fontWeight:600, color:C.text }}>{d.cif} <span style={{ fontSize:11, fontWeight:400, color:C.gray }}>· {d.kol}</span></div>
+                      <div style={{ color:C.textMd }}>{d.nama}</div>
+                      <div style={{ fontSize:11, color:C.gray }}>{d.ao} · {d.ukerNama}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ position:"relative" }}>
+              <div style={{ fontSize:12, color:C.gray, marginBottom:4 }}>Nama Debitur <span style={{ color:C.red }}>*</span></div>
+              <input value={form.nama} onChange={e=>handleNamaChange(e.target.value)} onBlur={()=>setTimeout(clearSug,150)} placeholder={form.aoId||form.ao ? "Ketik nama debitur RM ini…" : "Ketik nama debitur..."} style={inputS} autoComplete="off" />
+              {activeField==='nama' && suggestions.length>0 && (
+                <div style={sugBox}>
+                  {suggestions.map((d,i)=>(
+                    <div key={i} style={sugRow} onMouseDown={()=>selectSug(d)} onMouseEnter={e=>e.currentTarget.style.background=C.navyLt} onMouseLeave={e=>e.currentTarget.style.background=C.white}>
+                      <div style={{ fontWeight:600, color:C.text }}>{d.nama} <span style={{ fontSize:11, fontWeight:400, color:C.gray }}>· Kol {d.kol}</span></div>
+                      <div style={{ fontSize:11, color:C.gray }}>CIF {d.cif} · {d.ao} · {d.ukerNama}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ position:"relative" }}>
+              <div style={{ fontSize:12, color:C.gray, marginBottom:4 }}>RM / Mantri</div>
+              <input value={form.ao} onChange={e=>handleAoChange(e.target.value)} onBlur={()=>setTimeout(clearSug,150)} placeholder="Ketik nama RM / Mantri..." style={inputS} autoComplete="off" />
+              {activeField==='ao' && suggestions.length>0 && (
+                <div style={sugBox}>
+                  {suggestions.map((d,i)=>(
+                    <div key={i} style={sugRow} onMouseDown={()=>selectSug(d)} onMouseEnter={e=>e.currentTarget.style.background=C.navyLt} onMouseLeave={e=>e.currentTarget.style.background=C.white}>
+                      <div style={{ fontWeight:600, color:C.text }}>{d.ao}</div>
+                      <div style={{ fontSize:11, color:C.gray }}>{d.pn} · {d.ukerNama}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div><div style={{ fontSize:12, color:C.gray, marginBottom:4 }}>Kolektibilitas <span style={{ fontSize:10.5, color:C.gray, fontWeight:400 }}>(otomatis dari debitur)</span></div>
+              <div style={{ ...inputS, background:C.grayLt, color: form.kol?C.text:C.gray, display:"flex", alignItems:"center", fontWeight: form.kol?600:400 }}>{form.kol ? `Kol ${form.kol}` : "— pilih debitur dulu —"}</div></div>
             <div><div style={{ fontSize:12, color:C.gray, marginBottom:4 }}>Jenis Tindakan</div>
               <select value={form.jenis} onChange={e=>setForm({...form,jenis:e.target.value})} style={inputS}>{["Telepon Debitur","Kunjungan","Surat Peringatan 1","Restrukturisasi","Recovery"].map(j=><option key={j}>{j}</option>)}</select></div>
-            <div><div style={{ fontSize:12, color:C.gray, marginBottom:4 }}>Target Penyelesaian</div><input value={form.target} onChange={e=>setForm({...form,target:e.target.value})} placeholder="dd/mm/yyyy" style={inputS} /></div>
+            <div><div style={{ fontSize:12, color:C.gray, marginBottom:4 }}>Target Penyelesaian</div><input type="date" value={form.target} onChange={e=>setForm({...form,target:e.target.value})} style={inputS} /></div>
           </div>
-          <div style={{ marginBottom:10 }}><div style={{ fontSize:12, color:C.gray, marginBottom:4 }}>Hasil / Catatan</div><input value={form.catatan} onChange={e=>setForm({...form,catatan:e.target.value})} placeholder="Catatan tindak lanjut..." style={inputS} /></div>
-          <button onClick={handleTambah} style={{ padding:"8px 20px", background:C.navy, color:C.white, border:"none", borderRadius:7, cursor:"pointer", fontSize:13 }}>Simpan</button>
+          <div style={{ marginBottom:10 }}><div style={{ fontSize:12, color:C.gray, marginBottom:4 }}>Catatan Tindak Lanjut</div><input value={form.catatan} onChange={e=>setForm({...form,catatan:e.target.value})} placeholder="Catatan tindak lanjut..." style={inputS} /></div>
+          <button onClick={handleTambah} disabled={saving} style={{ padding:"8px 20px", background:saving?C.gray:C.navy, color:C.white, border:"none", borderRadius:7, cursor:saving?"not-allowed":"pointer", fontSize:13 }}>{saving?"Menyimpan...":"Simpan"}</button>
         </div>
       )}
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
-        <div style={{ padding:"12px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
-          <div style={{ position:"relative" }}>
-            <span style={{ position:"absolute", left:9, top:8, color:C.gray }}><Ic n="search" size={15} /></span>
-            <input placeholder="Cari nama debitur..." value={cariAP} onChange={e=>{ setCariAP(e.target.value); setPageAP(1); }} style={{ padding:"6px 10px 6px 30px", border:`1px solid ${C.border}`, borderRadius:7, fontSize:12.5, background:C.white, color:C.text, width:200 }} />
+        <div style={{ padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${C.border}`, flexWrap:"wrap", gap:8 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>Daftar Action Plan</div>
+          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+            {anyFilterAP && <button onClick={resetAP} style={{ fontSize:12, color:C.navy, background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"4px 10px", cursor:"pointer" }}>Reset Filter</button>}
+            <span style={{ fontSize:12.5, color:C.gray }}>{filteredPlans.length} action plan</span>
           </div>
-          <Select value={filterStatus} onChange={e=>{ setFilterStatus(e.target.value); setPageAP(1); }} options={["Semua Status","In Progress","Selesai"]} />
-          <Select value={filterJenis}  onChange={e=>{ setFilterJenis(e.target.value);  setPageAP(1); }} options={jenisOptions} />
-          <Select value={filterKolAP}  onChange={e=>{ setFilterKolAP(e.target.value);  setPageAP(1); }} options={kolOptions.map(k=>k==="Semua Kol"?k:"Kol "+k)} style={{}} />
-          <span style={{ marginLeft:"auto", fontSize:12, color:C.gray }}>{filteredPlans.length} action plan</span>
         </div>
-        <Tabel
-          headers={["Tanggal","Nama Debitur","PIC","Kol","Jenis Tindakan","Target","Hasil","Status"]}
-          colW={[90,150,95,46,150,95,160,110]}
-          rows={shownPlans.map(p=>[
-            p.tgl, p.nama, p.ao, p.kol, p.jenis, p.target, p.hasil,
-            <span style={{ display:"inline-block", padding:"2px 10px", borderRadius:20, background:p.status==="selesai"?C.greenLt:C.amberLt, color:p.status==="selesai"?C.green:C.amber, fontSize:11.5, fontWeight:600 }}>{statusLabel[p.status]}</span>,
-          ])}
-        />
-        {filteredPlans.length===0 && <div style={{ padding:24, textAlign:"center", color:C.gray, fontSize:14 }}>Tidak ada data</div>}
+        {loadingAP ? (
+          <div style={{ padding:24, textAlign:"center", color:C.gray, fontSize:14 }}>Memuat data...</div>
+        ) : (
+        <div style={{ overflowX:"auto", overflowY:"auto", maxHeight:"58vh" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5, tableLayout:"fixed" }}>
+            <colgroup>{[92,150,130,130,52,150,92,180,108,72].map((cw,i)=><col key={i} style={{ width:cw }} />)}</colgroup>
+            <thead>
+              <tr>
+                <th style={apNavyTh()}>Tanggal</th>
+                <th style={apNavyTh()}>Nama Debitur</th>
+                <th style={apNavyTh()}>Unit Kerja</th>
+                <th style={apNavyTh()}>RM/Mantri</th>
+                <th style={apNavyTh("center")}>Kol</th>
+                <th style={apNavyTh()}>Jenis Tindakan</th>
+                <th style={apNavyTh()}>Target</th>
+                <th style={apNavyTh()}>Hasil</th>
+                <th style={apNavyTh("center")}>Status</th>
+                <th style={apNavyTh("center")}></th>
+              </tr>
+              <tr>
+                <th style={apFiltTh}></th>
+                <th style={apFiltTh}><input value={cariAP} onChange={onFAP(setCariAP)} placeholder="Cari nama/CIF…" style={apInp} /></th>
+                <th style={apFiltTh}><select value={filterUkerAP} onChange={onFAP(setFilterUkerAP)} style={apSel}>{ukerOptions.map(u=><option key={u}>{u}</option>)}</select></th>
+                <th style={apFiltTh}></th>
+                <th style={apFiltTh}><select value={filterKolAP} onChange={onFAP(setFilterKolAP)} style={apSel}>{kolOptions.map(k=><option key={k} value={k}>{k==="Semua Kol"?k:"Kol "+k}</option>)}</select></th>
+                <th style={apFiltTh}><select value={filterJenis} onChange={onFAP(setFilterJenis)} style={apSel}>{jenisOptions.map(j=><option key={j}>{j}</option>)}</select></th>
+                <th style={apFiltTh}></th>
+                <th style={apFiltTh}></th>
+                <th style={apFiltTh}><select value={filterStatus} onChange={onFAP(setFilterStatus)} style={apSel}>{["Semua Status","In Progress","Selesai"].map(s=><option key={s}>{s}</option>)}</select></th>
+                <th style={apFiltTh}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredPlans.length===0
+                ? <tr><td colSpan={10} style={{ padding:24, textAlign:"center", color:C.gray, fontSize:13 }}>Tidak ada data</td></tr>
+                : shownPlans.map((p,ri)=>(
+                  <tr key={p.id} style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6` }}>
+                    <td style={{ padding:"9px 12px", color:C.textMd, whiteSpace:"nowrap" }}>{p.tgl}</td>
+                    <td style={{ padding:"9px 12px", color:C.text, fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{p.nama}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{ukerOf(p) || "-"}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{p.ao}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd, textAlign:"center", fontWeight:600 }}>{p.kol}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd }}>{p.jenis}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd, whiteSpace:"nowrap" }}>{p.target}</td>
+                    <td style={{ padding:"9px 12px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                      {perms?.editAction
+                        ? <span onClick={()=>editHasil(p)} title="Klik untuk isi/ubah hasil" style={{ cursor:"pointer", color:(p.hasil&&p.hasil!=="-")?C.textMd:C.navy, borderBottom:`1px dashed ${C.border}`, fontWeight:(p.hasil&&p.hasil!=="-")?400:600 }}>{p.hasil&&p.hasil!=="-" ? p.hasil : "+ isi hasil"}</span>
+                        : (p.hasil || "-")}
+                    </td>
+                    <td style={{ padding:"9px 12px", textAlign:"center" }}>
+                      <span style={{ display:"inline-block", padding:"2px 10px", borderRadius:20, background:p.status==="selesai"?C.greenLt:C.amberLt, color:p.status==="selesai"?C.green:C.amber, fontSize:11.5, fontWeight:600 }}>{statusLabel[p.status]}</span>
+                    </td>
+                    <td style={{ padding:"9px 8px", textAlign:"center" }}>
+                      <div style={{ display:"flex", gap:4, justifyContent:"center" }}>
+                        {p.status==="in_progress" && perms?.editAction && (
+                          <button title="Tandai Selesai" onClick={async()=>{
+                            const cur = p.hasil && p.hasil!=="-" ? p.hasil : "";
+                            const v = window.prompt(`Tandai SELESAI — isi hasil tindak lanjut untuk ${p.nama}:`, cur);
+                            if (v===null) return; // batal → status tidak diubah
+                            const val = v.trim();
+                            const { data, error } = await updateActionPlan(p.id, { status:"selesai", hasil: val || null });
+                            if (error) { alert("Gagal: " + error.message); return; }
+                            setDbPlans(prev=>prev.map(x=>x.id===p.id?{...x,status:"selesai",hasil:(data?.hasil)||val||"-"}:x));
+                          }} style={{ padding:"2px 8px", fontSize:11, background:C.greenLt, color:C.green, border:`1px solid ${C.green}`, borderRadius:4, cursor:"pointer" }}>✓</button>
+                        )}
+                        {perms?.editAction && (
+                          <button title="Hapus" onClick={async()=>{
+                            if(!window.confirm(`Hapus action plan "${p.nama}"?`)) return;
+                            const { error } = await deleteActionPlan(p.id);
+                            if (!error) setDbPlans(prev=>prev.filter(x=>x.id!==p.id));
+                          }} style={{ padding:"2px 8px", fontSize:11, background:C.redLt, color:C.red, border:`1px solid ${C.red}`, borderRadius:4, cursor:"pointer" }}>✕</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+        )}
         {filteredPlans.length>0 && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 16px", borderTop:`1px solid ${C.border}` }}>
             <span style={{ fontSize:12, color:C.gray }}>Menampilkan {(pgAP-1)*perPageAP+1}–{Math.min(pgAP*perPageAP,filteredPlans.length)} dari {filteredPlans.length}</span>
@@ -1523,70 +1865,272 @@ function SimulasiCKPN({ m }) {
   );
 }
 
-function KinerjaAO({ m }) {
+function KinerjaAO({ m, list, plans, goKinerjaDebitur }) {
   const w = useWindowWidth();
-  const top = m.perAO.slice(0,10);
+  const [cari, setCari]     = useState("");
+  const [unitF, setUnitF]   = useState("semua");
+  const [sortBy, setSortBy] = useState("default"); // default(OS desc) | os-* | deb-* | tinggi-* | action-* | berhasil-*
+
+  // Action Plan & Berhasil dari tabel action_plans ASLI (gabung via cif → aoId mantri)
+  const rows = useMemo(()=>{
+    const cifToAo = {};
+    (list||[]).forEach(d=>{ if(d.cif && cifToAo[d.cif]===undefined) cifToAo[d.cif] = d.aoId ?? null; }); // samakan dgn aoId mentah di perAO
+    const tally = {}; // aoId -> { total, selesai }
+    (plans||[]).forEach(p=>{
+      const ao = cifToAo[p.cif];
+      if (ao===undefined) return; // plan utk debitur di luar data periode ini → diabaikan
+      if (!tally[ao]) tally[ao] = { total:0, selesai:0 };
+      tally[ao].total += 1;
+      if (p.status==="selesai") tally[ao].selesai += 1;
+    });
+    return m.perAO.map(k=>{ const t = tally[k.aoId] || { total:0, selesai:0 }; return { ...k, apTotal:t.total, apSelesai:t.selesai }; });
+  }, [m.perAO, list, plans]);
+
+  const unitOpts = useMemo(()=>[...new Set(rows.map(k=>k.uker).filter(Boolean))].sort(), [rows]);
+  const filtered = useMemo(()=>{
+    let arr = rows.filter(k=>{
+      const okCari = !cari || (k.nama||"").toLowerCase().includes(cari.toLowerCase()) || (k.pn||"").toLowerCase().includes(cari.toLowerCase());
+      const okUnit = unitF==="semua" || k.uker===unitF;
+      return okCari && okUnit;
+    });
+    const [col,dir] = sortBy.split("-");
+    const keyMap = { os:"osJt", deb:"deb", tinggi:"tinggi", action:"apTotal", berhasil:"apSelesai" };
+    const kk = keyMap[col];
+    // Selalu group by UKER (KANCA → KCP → Unit), lalu sort kolom di dalam tiap grup
+    const rankMap = {}; UKER.forEach((u,i)=>{ rankMap[u.kode]=i; });
+    arr = [...arr].sort((a,b)=>{
+      const ra=rankMap[a.kodeUker]??999, rb=rankMap[b.kodeUker]??999;
+      if (ra !== rb) return ra - rb;
+      if (kk) return dir==="asc" ? a[kk]-b[kk] : b[kk]-a[kk];
+      return b.osJt - a.osJt; // default within-group: OS terbesar
+    });
+    return arr;
+  }, [rows, cari, unitF, sortBy]);
+
+  const goMantri = (k)=>{ if(k && goKinerjaDebitur) goKinerjaDebitur({ uker:k.kodeUker, aoId:k.aoId }); };
+
+  // Style header tabel ala Excel
+  const navyTh = (align="left")=>({ height:34, lineHeight:"34px", padding:"0 12px", background:`#${M_NAVY}`, color:"#fff", fontWeight:700, fontSize:10, textTransform:"uppercase", textAlign:align, whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,.12)", userSelect:"none", position:"sticky", top:0, zIndex:5 });
+  const filtTh = { padding:"5px 7px", background:C.grayLt, borderBottom:`1px solid ${C.border}`, position:"sticky", top:34, zIndex:5 };
+  const hSel = { width:"100%", padding:"3px 4px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.textMd, cursor:"pointer", boxSizing:"border-box" };
+  const hInp = { width:"100%", padding:"3px 6px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.text, boxSizing:"border-box" };
+  const sortOpts = [{ value:"",label:"Default" },{ value:"desc",label:"Terbesar" },{ value:"asc",label:"Terkecil" }];
+  const colVal = (tok)=>{ const [c,d]=sortBy.split("-"); return c===tok?d:""; };
+  const setColSort = (tok)=>(e)=>{ const v=e.target.value; setSortBy(v?`${tok}-${v}`:"default"); };
+  const anyFilter = cari || unitF!=="semua" || sortBy!=="default";
+  const resetF = ()=>{ setCari(""); setUnitF("semua"); setSortBy("default"); };
+
+  // Kolom + ekspor
+  const aoCols = [
+    { key:"nama",     label:"RM/Mantri",        align:"left",  type:"text", get:k=>k.nama||"-" },
+    { key:"pn",       label:"PN",               align:"left",  type:"text", get:k=>k.pn||"-" },
+    { key:"uker",     label:"Unit Kerja",       align:"left",  type:"text", get:k=>shortUker(k.uker)||"-" },
+    { key:"osJt",     label:"Outstanding (Jt)", align:"right", type:"num",  get:k=>Math.round(k.osJt) },
+    { key:"deb",      label:"Jml Debitur",      align:"right", type:"num",  get:k=>k.deb },
+    { key:"tinggi",   label:"Risiko Tinggi",    align:"right", type:"num",  get:k=>k.tinggi },
+    { key:"action",   label:"Action Plan",      align:"right", type:"num",  get:k=>k.apTotal },
+    { key:"berhasil", label:"Berhasil",         align:"right", type:"num",  get:k=>k.apSelesai },
+  ];
+  const aoFile = (ext)=>`Kinerja_RM_Mantri_${new Date().toISOString().slice(0,10)}.${ext}`;
+  const aoExportExcel = () => {
+    const cols=aoCols, nC=cols.length;
+    const aoa=[ ["Rekap Kinerja per RM/Mantri — BO Polewali"], [`Periode ${m.P.date} · ${filtered.length} RM/Mantri`], [], cols.map(c=>c.label), ...filtered.map(k=>cols.map(c=>c.get(k))) ];
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"]=cols.map(c=>({ wch: c.key==="nama"?22 : c.key==="uker"?20 : c.key==="pn"?12 : 14 }));
+    ws["!merges"]=[{s:{r:0,c:0},e:{r:0,c:nC-1}},{s:{r:1,c:0},e:{r:1,c:nC-1}}];
+    const thin=(rgb)=>({style:"thin",color:{rgb}});
+    const border={top:thin("E5E7EB"),bottom:thin("E5E7EB"),left:thin("E5E7EB"),right:thin("E5E7EB")};
+    if(ws["A1"]) ws["A1"].s={font:{bold:true,sz:13,color:{rgb:"1B2A6E"}}};
+    if(ws["A2"]) ws["A2"].s={font:{sz:10,color:{rgb:"6B7280"}}};
+    const hR=3;
+    for(let c=0;c<nC;c++){ const a=XLSX.utils.encode_cell({r:hR,c}); if(ws[a]) ws[a].s={fill:{patternType:"solid",fgColor:{rgb:M_NAVY}},font:{bold:true,color:{rgb:"FFFFFF"},sz:10},alignment:{horizontal:"center",vertical:"center",wrapText:true},border}; }
+    filtered.forEach((k,ri)=>{
+      const bg = ri%2?"F4F7FB":"FFFFFF";
+      for(let c=0;c<nC;c++){ const col=cols[c]; const ad=XLSX.utils.encode_cell({r:hR+1+ri,c}); if(!ws[ad]) continue;
+        const st={fill:{patternType:"solid",fgColor:{rgb:bg}},font:{sz:10,color:{rgb:"344054"}},alignment:{horizontal:col.align,vertical:"center"},border};
+        if(col.key==="tinggi" && k.tinggi>0){ st.font.color={rgb:"B91C1C"}; st.font.bold=true; }
+        ws[ad].s=st;
+        if(col.type==="num") ws[ad].z='#,##0';
+      }
+    });
+    ws["!rows"]=[{hpt:20},{hpt:14},{hpt:6},{hpt:22}];
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Kinerja RM-Mantri");
+    XLSX.writeFile(wb, aoFile("xlsx"));
+  };
+  const aoExportPDF = () => {
+    const doc=new jsPDF({ orientation:"landscape", unit:"pt", format:"a4" });
+    const pw=doc.internal.pageSize.getWidth();
+    doc.setFontSize(13); doc.setTextColor(15,42,80); doc.text("Rekap Kinerja per RM/Mantri — BO Polewali", 40, 40);
+    doc.setFontSize(9); doc.setTextColor(120,120,120); doc.text(`Periode ${m.P.date} · ${filtered.length} RM/Mantri`, 40, 56);
+    autoTable(doc, {
+      startY:72,
+      head:[aoCols.map(c=>c.label)],
+      body: filtered.map(k=>aoCols.map(c=> c.type==="num" ? Number(c.get(k)).toLocaleString("en-US") : String(c.get(k)))),
+      styles:{ fontSize:9, cellPadding:5, lineColor:[229,231,235], lineWidth:0.5, valign:"middle" },
+      headStyles:{ fillColor:hexRGB(M_NAVY), textColor:255, fontStyle:"bold", halign:"center" },
+      alternateRowStyles:{ fillColor:[244,247,251] },
+      columnStyles: Object.fromEntries(aoCols.map((c,i)=>[i,{ halign:c.align }])),
+      margin:{ left:40, right:40 }, showHead:"everyPage",
+      didParseCell:(d)=>{ if(d.section!=="body") return; const col=aoCols[d.column.index]; if(col.key==="tinggi"){ const k=filtered[d.row.index]; if(k&&k.tinggi>0){ d.cell.styles.textColor=hexRGB("B91C1C"); d.cell.styles.fontStyle="bold"; } } },
+      didDrawCell:(d)=>{ // garis pemisah navy antar unit (selalu aktif karena selalu group by UKER)
+        if(d.section!=="body") return;
+        const i=d.row.index;
+        if(i<=0 || filtered[i]?.kodeUker===filtered[i-1]?.kodeUker) return;
+        const navy=hexRGB(M_NAVY);
+        doc.setDrawColor(navy[0],navy[1],navy[2]); doc.setLineWidth(1.5);
+        doc.line(d.cell.x, d.cell.y, d.cell.x+d.cell.width, d.cell.y);
+      },
+    });
+    const barOs  = m.perAO.slice(0,10).map(k=>({ label:k.nama, value:k.osJt/1000 }));
+    const barRsk = [...m.perAO].sort((a,b)=>b.tinggi-a.tinggi).slice(0,10).map(k=>({ label:k.nama, value:k.tinggi }));
+    doc.addPage();
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(15,42,80);
+    doc.text("Grafik Kinerja RM/Mantri — BO Polewali", 40, 40);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(120,120,120);
+    doc.text(`Periode ${m.P.date}`, 40, 55);
+    const colW=(pw-80-20)/2;
+    drawBarsPDF(doc, { x:40,         y:88, w:colW, h:440, title:"Top 10 RM/Mantri — Outstanding (Rp M)",   rows:barOs,  valFmt:v=>fR(v),                colorHex:"0D9488" });
+    drawBarsPDF(doc, { x:40+colW+20, y:88, w:colW, h:440, title:"Top 10 RM/Mantri — Debitur Risiko Tinggi", rows:barRsk, valFmt:v=>String(Math.round(v)), colorHex:"DC2626" });
+    doc.save(aoFile("pdf"));
+  };
+
+  const onBar = (entry)=>{ if(!entry) return; const k=m.perAO.find(x=>x.nama===entry.nama && x.pn===entry.pn) || entry; goMantri(k); };
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      {/* Tabel dulu (atas) */}
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${C.border}`, flexWrap:"wrap", gap:8 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>Rekap Kinerja per RM/Mantri</div>
+          <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+            {anyFilter && <button onClick={resetF} style={{ fontSize:12, color:C.navy, background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"4px 10px", cursor:"pointer" }}>Reset Filter</button>}
+            <span style={{ fontSize:12.5, color:C.gray, marginRight:2 }}>{fNum(filtered.length)} RM/Mantri</span>
+            <button onClick={aoExportExcel} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", background:C.kpiGreen, color:"#fff", border:"none", borderRadius:7, fontSize:12, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={14} /> Excel</button>
+            <button onClick={aoExportPDF}   style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", background:C.kpiRed, color:"#fff", border:"none", borderRadius:7, fontSize:12, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={14} /> PDF</button>
+          </div>
+        </div>
+        <div style={{ overflowX:"auto", overflowY:"auto", maxHeight:"64vh" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5, tableLayout:"fixed" }}>
+            <colgroup>{[150,92,150,120,90,100,100,90].map((cw,i)=><col key={i} style={{ width:cw }} />)}</colgroup>
+            <thead>
+              <tr>
+                <th style={navyTh()}>RM/Mantri</th>
+                <th style={navyTh()}>PN</th>
+                <th style={navyTh()}>Unit Kerja</th>
+                <th style={navyTh("right")}>Outstanding</th>
+                <th style={navyTh("right")}>Jml Debitur</th>
+                <th style={navyTh("right")}>Risiko Tinggi</th>
+                <th style={navyTh("right")}>Action Plan</th>
+                <th style={navyTh("right")}>Berhasil</th>
+              </tr>
+              <tr>
+                <th style={filtTh}><input value={cari} onChange={e=>setCari(e.target.value)} placeholder="Cari nama/PN…" style={hInp} /></th>
+                <th style={filtTh}></th>
+                <th style={filtTh}><select value={unitF} onChange={e=>setUnitF(e.target.value)} style={hSel}><option value="semua">Semua Unit</option>{unitOpts.map(u=><option key={u} value={u}>{shortUker(u)}</option>)}</select></th>
+                <th style={filtTh}><select value={colVal("os")}       onChange={setColSort("os")}       style={hSel}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                <th style={filtTh}><select value={colVal("deb")}      onChange={setColSort("deb")}      style={hSel}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                <th style={filtTh}><select value={colVal("tinggi")}   onChange={setColSort("tinggi")}   style={hSel}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                <th style={filtTh}><select value={colVal("action")}   onChange={setColSort("action")}   style={hSel}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                <th style={filtTh}><select value={colVal("berhasil")} onChange={setColSort("berhasil")} style={hSel}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length===0
+                ? <tr><td colSpan={8} style={{ padding:24, textAlign:"center", color:C.gray, fontSize:13 }}>Tidak ada RM/Mantri sesuai filter.</td></tr>
+                : filtered.map((k,ri)=>{
+                    const clickable = !!goKinerjaDebitur;
+                    // Garis pemisah antar unit (selalu aktif karena grup selalu per UKER)
+                    const newGroup = ri>0 && filtered[ri-1]?.kodeUker !== k.kodeUker;
+                    return (
+                    <tr key={(k.aoId||k.nama)+ri} onClick={clickable?()=>goMantri(k):undefined}
+                      style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, borderTop: newGroup?`2px solid ${C.navy}`:undefined, cursor:clickable?"pointer":"default" }}
+                      onMouseEnter={clickable?(e=>e.currentTarget.style.filter="brightness(0.97)"):undefined}
+                      onMouseLeave={clickable?(e=>e.currentTarget.style.filter="none"):undefined}>
+                      <td style={{ padding:"9px 12px", color:C.text, fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{k.nama}</td>
+                      <td style={{ padding:"9px 12px", fontFamily:"monospace", fontSize:11.5, color:C.navy }}>{k.pn||"—"}</td>
+                      <td style={{ padding:"9px 12px", color:C.textMd, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{shortUker(k.uker)}</td>
+                      <td style={{ padding:"9px 12px", color:C.textMd, fontWeight:500, textAlign:"right" }}>{fJt(k.osJt)}</td>
+                      <td style={{ padding:"9px 12px", color:C.textMd, textAlign:"right" }}>{fNum(k.deb)}</td>
+                      <td style={{ padding:"9px 12px", color:k.tinggi>0?C.red:C.gray, fontWeight:600, textAlign:"right" }}>{k.tinggi}</td>
+                      <td style={{ padding:"9px 12px", color:C.textMd, textAlign:"right" }}>{k.apTotal}</td>
+                      <td style={{ padding:"9px 12px", color:k.apSelesai>0?C.green:C.gray, fontWeight:600, textAlign:"right" }}>{k.apSelesai}</td>
+                    </tr>
+                    );
+                  })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Grafik di bawah tabel — bar bisa diklik */}
       <div style={{ display:"grid", gridTemplateColumns: w>=1000?"1fr 1fr":"1fr", gap:12 }}>
         <div style={card}>
           <CardTitle>Top 10 RM/Mantri — Outstanding</CardTitle>
-          <BarH data={top} dataKey="osJt" nameKey="nama" color={C.kpiTeal} fmt={(v)=>fMilV(v/1000)} />
+          <BarH data={m.perAO.slice(0,10)} dataKey="osJt" nameKey="nama" color={C.kpiTeal} fmt={(v)=>fMilV(v/1000)} onBarClick={onBar} />
         </div>
         <div style={card}>
           <CardTitle>Top 10 RM/Mantri — Debitur Risiko Tinggi</CardTitle>
-          <BarH data={[...m.perAO].sort((a,b)=>b.tinggi-a.tinggi).slice(0,10)} dataKey="tinggi" nameKey="nama" color={C.kpiRed} fmt={(v)=>fNum(v)} />
-        </div>
-      </div>
-      <div style={{ ...card, padding:0, overflow:"hidden" }}>
-        <div style={{ padding:"14px 16px 0" }}><CardTitle>Rekap Kinerja per RM/Mantri</CardTitle></div>
-        <div style={{ height:"calc(100vh - 520px)", overflowY:"auto" }}>
-          <Tabel stickyHeader
-            headers={["RM/Mantri","PN","Unit Kerja","Outstanding","Jml Debitur","Risiko Tinggi","Action Plan","Berhasil"]}
-            colW={[130,90,140,120,90,100,90,90]}
-            rows={m.perAO.map(k=>[
-              k.nama, <span style={{ fontFamily:"monospace", fontSize:11.5, color:C.navy }}>{k.pn}</span>, k.uker, fJt(k.osJt), k.deb,
-              <span style={{ color:C.red, fontWeight:600 }}>{k.tinggi}</span>,
-              k.actionTotal,
-              <span style={{ color:C.navy, fontWeight:600 }}>{k.berhasil}</span>,
-            ])}
-          />
+          <BarH data={[...m.perAO].sort((a,b)=>b.tinggi-a.tinggi).slice(0,10)} dataKey="tinggi" nameKey="nama" color={C.kpiRed} fmt={(v)=>fNum(v)} onBarClick={onBar} />
         </div>
       </div>
     </div>
   );
 }
 
-function KinerjaUnit({ m, list }) {
+function KinerjaUnit({ m, list, preset }) {
   const w = useWindowWidth();
   const f = m.P.f;
 
   // Navigation
   const [selUker, setSelUker] = useState(null);
   const [selAO,   setSelAO]   = useState(null);
+  const appliedPresetRef = useRef(null); // anti re-apply preset yang sama
+  const keepExpandRef    = useRef(false); // pertahankan breakdown saat deep-link
+  const autoPageCifRef   = useRef(null);  // lompat ke halaman berisi debitur deep-link
 
   // Level-0 sort
   const [unitSort, setUnitSort] = useState("default");
 
-  // Level-1 sort + filter
-  const [mantriSort,        setMantriSort]        = useState("nama");
+  // Level-1 sort + filter (mantri) — filter ala Excel di header
+  const [mantriCari,        setMantriCari]        = useState("");
+  const [mantriSort,        setMantriSort]        = useState("nama"); // nama | os-desc | os-asc | npl-desc | npl-asc
   const [mantriKolFilter,   setMantriKolFilter]   = useState("semua");
-  const [mantriRisFilter,   setMantriRisFilter]   = useState("semua");
 
   // Level-2 filter / sort / page / expand
-  const [kolFilter,    setKolFilter]    = useState("semua");
-  const [risikoFilter, setRisikoFilter] = useState("semua");
-  const [debSort,      setDebSort]      = useState("dpd");
+  const [debCari,       setDebCari]       = useState("");
+  const [debSektorF,    setDebSektorF]    = useState("semua");
+  const [kolFilter,     setKolFilter]     = useState("semua");
+  const [risikoFilter,  setRisikoFilter]  = useState("semua");
+  const [restrukFilter, setRestrukFilter] = useState("semua");
+  const [debSortBy,     setDebSortBy]     = useState("default"); // default | os-desc | os-asc | dpd-desc | dpd-asc
   const [debPage,      setDebPage]      = useState(1);
+  const [debPerPage,   setDebPerPage]   = useState(20);
   const [expandedCif,  setExpandedCif]  = useState(null);
-  const PER_PAGE = 20;
 
   // Reset filters when navigating between levels
   useEffect(() => {
-    setKolFilter("semua"); setRisikoFilter("semua"); setDebSort("dpd"); setDebPage(1);
-    setExpandedCif(null);
-    setMantriSort("nama"); setMantriKolFilter("semua"); setMantriRisFilter("semua");
+    setDebCari(""); setDebSektorF("semua"); setKolFilter("semua"); setRisikoFilter("semua"); setRestrukFilter("semua"); setDebSortBy("default"); setDebPage(1);
+    setMantriCari(""); setMantriSort("nama"); setMantriKolFilter("semua");
+    // Jangan nol-kan breakdown bila navigasi ini dipicu deep-link (preset).
+    if (keepExpandRef.current) keepExpandRef.current = false;
+    else setExpandedCif(null);
   }, [selUker, selAO]);
+
+  // Deep-link dari Dashboard / Kinerja RM-Mantri: buka unit → mantri (→ debitur dgn breakdown bila ada cif).
+  // Effect ini SETELAH reset di atas agar expandedCif tidak ikut ter-reset.
+  useEffect(() => {
+    if (!preset || !preset.uker) return;
+    const key = `${preset.uker}|${preset.aoId}|${preset.cif||''}`;
+    if (appliedPresetRef.current === key) return;
+    appliedPresetRef.current = key;
+    const u = m.perUker.find(x => x.kode === preset.uker);
+    if (!u) return;
+    keepExpandRef.current = true;
+    autoPageCifRef.current = preset.cif || null;
+    setSelUker(u);
+    setSelAO(preset.aoId || "__none__");
+    setExpandedCif(preset.cif || null);
+  }, [preset, m.perUker]);
 
   // Level-1: mantri list computation
   const mantriList = useMemo(() => {
@@ -1612,59 +2156,359 @@ function KinerjaUnit({ m, list }) {
   // Level-1: filtered + sorted mantri
   const sortedMantri = useMemo(() => {
     let items = [...mantriList];
+    if (mantriCari) items = items.filter(a => a.nama.toLowerCase().includes(mantriCari.toLowerCase()) || (a.pn||"").toLowerCase().includes(mantriCari.toLowerCase()));
     if (mantriKolFilter !== "semua") items = items.filter(a => a.items.some(d => d.kol === mantriKolFilter));
-    if (mantriRisFilter !== "semua") items = items.filter(a => a.items.some(d => risikoLabel[d.tier] === mantriRisFilter));
-    if (mantriSort === "npl")    return items.sort((a,b)=>b.npl-a.npl);
-    if (mantriSort === "risiko") return items.sort((a,b)=>b.tinggi-a.tinggi);
-    if (mantriSort === "os")     return items.sort((a,b)=>b.osJt-a.osJt);
-    return items.sort((a,b)=>a.nama.localeCompare(b.nama, "id"));  // "nama" = A-Z
-  }, [mantriList, mantriSort, mantriKolFilter, mantriRisFilter]);
+    if (mantriSort === "os-desc")   return items.sort((a,b)=>b.osJt-a.osJt);
+    if (mantriSort === "os-asc")    return items.sort((a,b)=>a.osJt-b.osJt);
+    if (mantriSort === "deb-desc")  return items.sort((a,b)=>b.deb-a.deb);
+    if (mantriSort === "deb-asc")   return items.sort((a,b)=>a.deb-b.deb);
+    if (mantriSort === "npl-desc")  return items.sort((a,b)=>b.npl-a.npl);
+    if (mantriSort === "npl-asc")   return items.sort((a,b)=>a.npl-b.npl);
+    if (mantriSort === "ckpn-desc") return items.sort((a,b)=>b.ckpn-a.ckpn);
+    if (mantriSort === "ckpn-asc")  return items.sort((a,b)=>a.ckpn-b.ckpn);
+    return items.sort((a,b)=>a.nama.localeCompare(b.nama, "id"));  // "nama" = A-Z (default)
+  }, [mantriList, mantriSort, mantriKolFilter, mantriCari]);
 
-  // Level-2: raw items for selected ao
+  // Level-2: raw items for selected ao (default urut OS terbesar)
   const aoItems = useMemo(() => {
     if (!selUker || selAO===null) return [];
     const items = list.filter(d => d.uker === selUker.kode);
-    return selAO === "__none__" ? items.filter(d=>!d.aoId) : items.filter(d=>d.aoId===selAO);
+    const f2 = selAO === "__none__" ? items.filter(d=>!d.aoId) : items.filter(d=>d.aoId===selAO);
+    return [...f2].sort((a,b)=>b.osJt-a.osJt);
   }, [selUker, selAO, list]);
+
+  const sektorListLvl2 = useMemo(()=>[...new Set(aoItems.map(d=>d.sektor).filter(Boolean))].sort(), [aoItems]);
 
   // Level-2: filtered + sorted debitur
   const filteredDebitur = useMemo(() => {
     let items = [...aoItems];
-    if (kolFilter    !== "semua") items = items.filter(d => d.kol === kolFilter);
-    if (risikoFilter !== "semua") items = items.filter(d => risikoLabel[d.tier] === risikoFilter);
-    if      (debSort === "dpd")  items.sort((a,b) => b.dpd - a.dpd);
-    else if (debSort === "kol")  { const ko={"5":1,"4":2,"3":3,"2B":4,"2A":5,"1":6}; items.sort((a,b)=>(ko[a.kol]||6)-(ko[b.kol]||6)); }
-    else                          items.sort((a,b) => b.osJt - a.osJt);
-    return items;
-  }, [aoItems, kolFilter, risikoFilter, debSort]);
+    if (debCari) items = items.filter(d => d.nama.toLowerCase().includes(debCari.toLowerCase()) || (d.cif||"").toLowerCase().includes(debCari.toLowerCase()));
+    if (debSektorF    !== "semua") items = items.filter(d => d.sektor === debSektorF);
+    if (kolFilter     !== "semua") items = items.filter(d => d.kol === kolFilter);
+    if (risikoFilter  !== "semua") items = items.filter(d => risikoLabel[d.tier] === risikoFilter);
+    if (restrukFilter !== "semua") items = items.filter(d => (d.flagRestruk || 'N') === restrukFilter);
+    if      (debSortBy === "os-desc")  items.sort((a,b)=>b.osJt-a.osJt);
+    else if (debSortBy === "os-asc")   items.sort((a,b)=>a.osJt-b.osJt);
+    else if (debSortBy === "dpd-desc") items.sort((a,b)=>b.dpd-a.dpd);
+    else if (debSortBy === "dpd-asc")  items.sort((a,b)=>a.dpd-b.dpd);
+    return items; // default: urutan aoItems (OS terbesar)
+  }, [aoItems, debCari, debSektorF, kolFilter, risikoFilter, restrukFilter, debSortBy]);
+
+  // Deep-link: lompat ke halaman yang memuat debitur target (sekali, lalu ref dibersihkan)
+  useEffect(() => {
+    const cif = autoPageCifRef.current;
+    if (!cif || selAO === null) return;
+    const idx = filteredDebitur.findIndex(d => d.cif === cif);
+    if (idx >= 0) setDebPage(Math.floor(idx / debPerPage) + 1);
+    autoPageCifRef.current = null;
+  }, [filteredDebitur, selAO, debPerPage]);
 
   // Level-0: sorted units for table (bar charts stay OS/NPL order as-is)
   const sortedUker = useMemo(() => {
-    if (unitSort === "npl")    return [...m.perUker].sort((a,b)=>b.npl-a.npl);
-    if (unitSort === "risiko") return [...m.perUker].sort((a,b)=>b.tinggi-a.tinggi);
-    if (unitSort === "os")     return [...m.perUker].sort((a,b)=>b.osJt-a.osJt);
-    return m.perUker;  // "default" = urutan UKER (KANCA → KCP → Unit)
+    const arr = [...m.perUker];
+    const [col, dir] = unitSort.split("-");
+    if (col === "nama") return arr.sort((a,b)=> dir==="desc" ? b.nama.localeCompare(a.nama,"id") : a.nama.localeCompare(b.nama,"id"));
+    const keyMap = { os:"osJt", deb:"deb", npl:"npl", ckpn:"ckpn", rec:"recovery" };
+    const k = keyMap[col];
+    if (k) return arr.sort((a,b)=> dir==="asc" ? (a[k]-b[k]) : (b[k]-a[k]));
+    return arr;  // "default" = urutan UKER (KANCA → KCP → Unit)
   }, [m.perUker, unitSort]);
 
   const aoObj    = selAO !== null ? mantriList.find(a=>a.key===selAO) : null;
-  const totalPg  = Math.max(1, Math.ceil(filteredDebitur.length / PER_PAGE));
+  const totalPg  = Math.max(1, Math.ceil(filteredDebitur.length / debPerPage));
   const curPg    = Math.min(debPage, totalPg);
-  const paged    = filteredDebitur.slice((curPg-1)*PER_PAGE, curPg*PER_PAGE);
+  const paged    = filteredDebitur.slice((curPg-1)*debPerPage, curPg*debPerPage);
+
+  // ── Style header tabel ala Excel (navy + baris filter sticky) ──
+  const navyTh = (align="left")=>({ height:34, lineHeight:"34px", padding:"0 12px", background:`#${M_NAVY}`, color:"#fff", fontWeight:700, fontSize:10, textTransform:"uppercase", textAlign:align, whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,.12)", userSelect:"none", position:"sticky", top:0, zIndex:5 });
+  const filtTh = { padding:"5px 7px", background:C.grayLt, borderBottom:`1px solid ${C.border}`, position:"sticky", top:34, zIndex:5 };
+  const hSelSt = { width:"100%", padding:"3px 4px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.textMd, cursor:"pointer", boxSizing:"border-box" };
+  const hInpSt = { width:"100%", padding:"3px 6px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.text, boxSizing:"border-box" };
+  const sortOpts3 = [{ value:"",label:"Default" },{ value:"desc",label:"Terbesar" },{ value:"asc",label:"Terkecil" }];
+  // Level-2: sort kolom Outstanding/DPD + reset
+  const onDF = (fn)=>(e)=>{ fn(e.target.value); setDebPage(1); };
+  const osSort  = debSortBy==="os-desc"?"desc":debSortBy==="os-asc"?"asc":"";
+  const dpdSort = debSortBy==="dpd-desc"?"desc":debSortBy==="dpd-asc"?"asc":"";
+  const setColSort = (col)=>(e)=>{ const v=e.target.value; setDebSortBy(v?`${col}-${v}`:"default"); setDebPage(1); };
+  const anyDebFilter = debCari || debSektorF!=="semua" || kolFilter!=="semua" || risikoFilter!=="semua" || restrukFilter!=="semua" || debSortBy!=="default";
+  const resetDebFilters = ()=>{ setDebCari(""); setDebSektorF("semua"); setKolFilter("semua"); setRisikoFilter("semua"); setRestrukFilter("semua"); setDebSortBy("default"); setDebPage(1); };
+  // Level-1: sort kolom Outstanding/NPL + reset
+  const mOsSort   = mantriSort==="os-desc"?"desc":mantriSort==="os-asc"?"asc":"";
+  const mDebSort  = mantriSort==="deb-desc"?"desc":mantriSort==="deb-asc"?"asc":"";
+  const mNplSort  = mantriSort==="npl-desc"?"desc":mantriSort==="npl-asc"?"asc":"";
+  const mCkpnSort = mantriSort==="ckpn-desc"?"desc":mantriSort==="ckpn-asc"?"asc":"";
+  const setMSort = (col)=>(e)=>{ const v=e.target.value; setMantriSort(v?`${col}-${v}`:"nama"); };
+  const anyMantriFilter = mantriCari || mantriKolFilter!=="semua" || mantriSort!=="nama";
+  const resetMantriFilters = ()=>{ setMantriCari(""); setMantriKolFilter("semua"); setMantriSort("nama"); };
+  // Level-0: sort kolom rekap unit (Unit Kerja / OS / Debitur / NPL / CKPN / Recovery)
+  const ukColTok    = { nama:"nama", osJt:"os", deb:"deb", npl:"npl", ckpn:"ckpn", recovery:"rec" };
+  const colSortVal  = (tok)=>{ const [c,d]=unitSort.split("-"); return c===tok ? d : ""; };
+  const setUkSort   = (tok)=>(e)=>{ const v=e.target.value; setUnitSort(v?`${tok}-${v}`:"default"); };
 
   // ── Helpers ──
   const kol3bg  = { "1":C.greenLt,"2A":C.amberLt,"2B":"#FFF3CD","3":C.redLt,"4":"#FFD6CC","5":"#F7C5C0" };
   const kol3fg  = { "1":C.green,"2A":C.amber,"2B":"#856404","3":C.red,"4":"#C0392B","5":"#922B21" };
   const KolBadge = ({k}) => <span style={{ padding:"2px 8px", borderRadius:20, background:kol3bg[k]||C.grayLt, color:kol3fg[k]||C.gray, fontSize:11.5, fontWeight:700 }}>Kol {k}</span>;
   const nplColor = (v) => v>5?C.red:v>4?C.amber:C.green;
+  const nplHex   = (v) => v>5?"B91C1C":v>4?"B45309":"15803D";
 
-  const unitSortOpts   = [{ value:"default",label:"Urutan Default" },{ value:"os",label:"Outstanding Tertinggi" },{ value:"npl",label:"NPL Ratio Tertinggi" },{ value:"risiko",label:"Risiko Terbanyak" }];
-  const mantriSortOpts = [{ value:"nama",label:"Urutan A–Z" },{ value:"os",label:"Outstanding Tertinggi" },{ value:"npl",label:"NPL Ratio Tertinggi" },{ value:"risiko",label:"Risiko Terbanyak" }];
-  const debSortOpts    = [{ value:"dpd",label:"DPD Tertinggi" },{ value:"os",label:"Outstanding Tertinggi" },{ value:"kol",label:"Kolektibilitas Terburuk" }];
+  // Kolom tabel Rekap Kinerja per Unit Kerja (dipakai render + ekspor)
+  const ukCols = [
+    { key:"nama",     label:"Unit Kerja",        align:"left",  type:"text", get:u=>u.nama,            render:u=>u.nama },
+    { key:"osJt",     label:"Outstanding (Jt)",  align:"right", type:"num",  get:u=>Math.round(u.osJt), render:u=>fJt(u.osJt) },
+    { key:"deb",      label:"Debitur",           align:"right", type:"num",  get:u=>u.deb,             render:u=>fNum(u.deb) },
+    { key:"npl",      label:"NPL Ratio (%)",     align:"right", type:"pct",  get:u=>+u.npl.toFixed(2), render:u=>fPct(u.npl,1) },
+    { key:"ckpn",     label:"CKPN (Jt)",         align:"right", type:"num",  get:u=>Math.round(u.ckpn), render:u=>fJt(u.ckpn) },
+    { key:"recovery", label:"Recovery Rate (%)", align:"right", type:"pct",  get:u=>u.recovery,        render:u=>u.recovery+"%" },
+  ];
+  const ukExportExcel = () => {
+    const ws = XLSX.utils.aoa_to_sheet([ukCols.map(c=>c.label), ...sortedUker.map(u=>ukCols.map(c=>c.get(u)))]);
+    ws["!cols"] = ukCols.map(c=>({ wch: c.key==="nama"?24:16 }));
+    ws["!rows"] = [{ hpt:22 }];
+    const thin=(rgb)=>({ style:"thin", color:{ rgb } });
+    const border={ top:thin("E5E7EB"), bottom:thin("E5E7EB"), left:thin("E5E7EB"), right:thin("E5E7EB") };
+    const nC=ukCols.length;
+    for(let c=0;c<nC;c++){ const a=XLSX.utils.encode_cell({r:0,c}); if(ws[a]) ws[a].s={ fill:{patternType:"solid",fgColor:{rgb:M_NAVY}}, font:{bold:true,color:{rgb:"FFFFFF"},sz:10}, alignment:{horizontal:"center",vertical:"center",wrapText:true}, border }; }
+    sortedUker.forEach((u,ri)=>{
+      const bg = ri%2 ? "F4F7FB" : "FFFFFF";
+      for(let c=0;c<nC;c++){ const col=ukCols[c]; const a=XLSX.utils.encode_cell({r:ri+1,c}); if(!ws[a]) continue;
+        const st={ fill:{patternType:"solid",fgColor:{rgb:bg}}, font:{sz:10,color:{rgb:"344054"}}, alignment:{horizontal:col.align,vertical:"center"}, border };
+        if(col.key==="npl"){ st.font.color={rgb:nplHex(u.npl)}; st.font.bold=true; }
+        ws[a].s=st;
+        if(col.type==="num") ws[a].z='#,##0';
+        if(col.type==="pct") ws[a].z='0.00"%"';
+      }
+    });
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Kinerja Unit");
+    XLSX.writeFile(wb, `Kinerja_Unit_${new Date().toISOString().slice(0,10)}.xlsx`);
+  };
+  const ukExportPDF = () => {
+    const doc = new jsPDF({ orientation:"portrait", unit:"pt", format:"a4" });
+    doc.setFontSize(13); doc.setTextColor(15,42,80); doc.text("Rekap Kinerja per Unit Kerja — BO Polewali", 40, 40);
+    doc.setFontSize(9); doc.setTextColor(120,120,120); doc.text(`Periode ${m.P.date} · ${sortedUker.length} unit kerja`, 40, 56);
+    autoTable(doc, {
+      startY:70,
+      head:[ukCols.map(c=>c.label)],
+      body: sortedUker.map(u=>ukCols.map(c=> c.type==="num" ? Number(c.get(u)).toLocaleString("en-US") : c.type==="pct" ? fR(c.get(u))+"%" : String(c.get(u)))),
+      styles:{ fontSize:9, cellPadding:5, lineColor:[229,231,235], lineWidth:0.5, valign:"middle" },
+      headStyles:{ fillColor:hexRGB(M_NAVY), textColor:255, fontStyle:"bold", halign:"center" },
+      alternateRowStyles:{ fillColor:[244,247,251] },
+      columnStyles: Object.fromEntries(ukCols.map((c,i)=>[i,{ halign:c.align }])),
+      margin:{ left:40, right:40 },
+      didParseCell:(d)=>{ if(d.section!=="body") return; const col=ukCols[d.column.index]; if(col.key==="npl"){ const u=sortedUker[d.row.index]; if(u){ d.cell.styles.textColor=hexRGB(nplHex(u.npl)); d.cell.styles.fontStyle="bold"; } } },
+    });
+    // Halaman terpisah untuk grafik (Outstanding & NPL per unit kerja)
+    const ukBarOs  = [...m.perUker].sort((a,b)=>b.osJt-a.osJt).slice(0,20).map(u=>({ label:u.nama, value:u.osJt/1000 }));
+    const ukBarNpl = [...m.perUker].sort((a,b)=>b.npl-a.npl).slice(0,20).map(u=>({ label:u.nama, value:u.npl }));
+    if (ukBarOs.length) {
+      doc.addPage();
+      doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(15,42,80);
+      doc.text("Grafik Kinerja per Unit Kerja — BO Polewali", 40, 40);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(120,120,120);
+      doc.text(`Periode ${m.P.date}`, 40, 55);
+      drawBarsPDF(doc, { x:40, y:88,  w:515, h:330, title:"Outstanding per Unit Kerja (Rp M)", rows:ukBarOs,  valFmt:v=>fR(v),      colorHex:"0D9488" });
+      drawBarsPDF(doc, { x:40, y:450, w:515, h:330, title:"NPL Ratio per Unit Kerja (%)",      rows:ukBarNpl, valFmt:v=>fR(v)+"%", colorHex:"DC2626" });
+    }
+    doc.save(`Kinerja_Unit_${new Date().toISOString().slice(0,10)}.pdf`);
+  };
+
+  // Kolom + ekspor tabel Rekap Kinerja per RM/Mantri (level detail unit)
+  const mantriCols = [
+    { key:"nama", label:"RM/Mantri",        align:"left",  type:"text", get:a=>a.key==="__none__"?"(Tanpa RM/Mantri)":a.nama },
+    { key:"pn",   label:"PN",               align:"left",  type:"text", get:a=>a.pn||"-" },
+    { key:"deb",  label:"Debitur",          align:"right", type:"num",  get:a=>a.deb },
+    { key:"osJt", label:"Outstanding (Jt)", align:"right", type:"num",  get:a=>Math.round(a.osJt) },
+    { key:"kol",  label:"Kol Bermasalah",   align:"left",  type:"text", get:a=>`${a.tinggi} tinggi · ${a.sedang} sedang` },
+    { key:"npl",  label:"NPL Ratio (%)",    align:"right", type:"pct",  get:a=>+a.npl.toFixed(2) },
+    { key:"ckpn", label:"CKPN (Jt)",        align:"right", type:"num",  get:a=>Math.round(a.ckpn) },
+  ];
+  const mantriKpiExp = () => (selUker ? [
+    { label:"Total Debitur", val:fNum(selUker.deb) },
+    { label:"Outstanding",   val:fJt(selUker.osJt) },
+    { label:"NPL Ratio",     val:fPct(selUker.npl,1) },
+    { label:"Risiko Tinggi", val:fNum(selUker.tinggi) },
+  ] : []);
+  const mantriFileName = (ext) => `Kinerja_${(selUker?.nama||"Unit").replace(/[^\w]+/g,"_")}_${new Date().toISOString().slice(0,10)}.${ext}`;
+  const mantriExportExcel = () => {
+    if (!selUker) return;
+    const cols = mantriCols, nC = cols.length, kpis = mantriKpiExp();
+    const aoa = [];
+    aoa.push([`Rekap Kinerja per RM/Mantri — ${selUker.nama}`]);  // r0 judul
+    aoa.push([`Periode ${m.P.date}`]);                            // r1
+    aoa.push([]);                                                 // r2
+    aoa.push(cols.map((_,i)=> i<4 ? kpis[i].label : ""));         // r3 label KPI
+    aoa.push(cols.map((_,i)=> i<4 ? kpis[i].val   : ""));         // r4 nilai KPI
+    aoa.push([]);                                                 // r5
+    const hR = 6;
+    aoa.push(cols.map(c=>c.label));                               // r6 header tabel
+    sortedMantri.forEach(a=> aoa.push(cols.map(c=>c.get(a))));    // data
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = cols.map((c,i)=>({ wch: i===0?24 : i===4?20 : 15 }));
+    ws["!merges"] = [{ s:{r:0,c:0}, e:{r:0,c:nC-1} }, { s:{r:1,c:0}, e:{r:1,c:nC-1} }];
+    const thin=(rgb)=>({ style:"thin", color:{ rgb } });
+    const border={ top:thin("E5E7EB"), bottom:thin("E5E7EB"), left:thin("E5E7EB"), right:thin("E5E7EB") };
+    if(ws["A1"]) ws["A1"].s={ font:{ bold:true, sz:13, color:{rgb:"1B2A6E"} } };
+    if(ws["A2"]) ws["A2"].s={ font:{ sz:10, color:{rgb:"6B7280"} } };
+    for(let i=0;i<4;i++){
+      const la=XLSX.utils.encode_cell({r:3,c:i}), va=XLSX.utils.encode_cell({r:4,c:i});
+      if(ws[la]) ws[la].s={ fill:{patternType:"solid",fgColor:{rgb:M_NAVY}}, font:{bold:true,sz:9,color:{rgb:"FFFFFF"}}, alignment:{horizontal:"center",vertical:"center"}, border };
+      if(ws[va]) ws[va].s={ fill:{patternType:"solid",fgColor:{rgb:"F4F7FB"}}, font:{bold:true,sz:12,color:{rgb:"111827"}}, alignment:{horizontal:"center",vertical:"center"}, border };
+    }
+    for(let c=0;c<nC;c++){ const a=XLSX.utils.encode_cell({r:hR,c}); if(ws[a]) ws[a].s={ fill:{patternType:"solid",fgColor:{rgb:M_NAVY}}, font:{bold:true,color:{rgb:"FFFFFF"},sz:10}, alignment:{horizontal:"center",vertical:"center",wrapText:true}, border }; }
+    sortedMantri.forEach((a,ri)=>{
+      const bg = ri%2 ? "F4F7FB" : "FFFFFF";
+      for(let c=0;c<nC;c++){ const col=cols[c]; const ad=XLSX.utils.encode_cell({r:hR+1+ri,c}); if(!ws[ad]) continue;
+        const st={ fill:{patternType:"solid",fgColor:{rgb:bg}}, font:{sz:10,color:{rgb:"344054"}}, alignment:{horizontal:col.align,vertical:"center"}, border };
+        if(col.key==="npl"){ st.font.color={rgb:nplHex(a.npl)}; st.font.bold=true; }
+        ws[ad].s=st;
+        if(col.type==="num") ws[ad].z='#,##0';
+        if(col.type==="pct") ws[ad].z='0.00"%"';
+      }
+    });
+    ws["!rows"]=[{hpt:20},{hpt:14},{hpt:6},{hpt:16},{hpt:24},{hpt:6},{hpt:22}];
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Kinerja RM");
+    XLSX.writeFile(wb, mantriFileName("xlsx"));
+  };
+  const mantriExportPDF = () => {
+    if (!selUker) return;
+    const doc = new jsPDF({ orientation:"landscape", unit:"pt", format:"a4" });
+    const pw = doc.internal.pageSize.getWidth();
+    doc.setFontSize(13); doc.setTextColor(15,42,80); doc.text(`Rekap Kinerja per RM/Mantri — ${selUker.nama}`, 40, 40);
+    doc.setFontSize(9); doc.setTextColor(120,120,120); doc.text(`Periode ${m.P.date} · ${sortedMantri.length} RM/Mantri`, 40, 56);
+    const kpis = mantriKpiExp();
+    const cardY=70, cardH=46, gap=12, cardW=(pw-80-gap*3)/4;
+    kpis.forEach((k,i)=>{
+      const x=40+i*(cardW+gap);
+      doc.setDrawColor(229,231,235); doc.setFillColor(248,250,252);
+      doc.roundedRect(x,cardY,cardW,cardH,4,4,"FD");
+      doc.setFontSize(7.5); doc.setTextColor(107,114,128); doc.text(k.label.toUpperCase(), x+12, cardY+17);
+      doc.setFontSize(13); doc.setTextColor(17,24,39); doc.text(String(k.val), x+12, cardY+36);
+    });
+    autoTable(doc, {
+      startY: cardY+cardH+16,
+      head:[mantriCols.map(c=>c.label)],
+      body: sortedMantri.map(a=>mantriCols.map(c=> c.type==="num" ? Number(c.get(a)).toLocaleString("en-US") : c.type==="pct" ? fR(c.get(a))+"%" : String(c.get(a)))),
+      styles:{ fontSize:9, cellPadding:5, lineColor:[229,231,235], lineWidth:0.5, valign:"middle" },
+      headStyles:{ fillColor:hexRGB(M_NAVY), textColor:255, fontStyle:"bold", halign:"center" },
+      alternateRowStyles:{ fillColor:[244,247,251] },
+      columnStyles: Object.fromEntries(mantriCols.map((c,i)=>[i,{ halign:c.align }])),
+      margin:{ left:40, right:40 },
+      didParseCell:(d)=>{ if(d.section!=="body") return; const col=mantriCols[d.column.index]; if(col.key==="npl"){ const a=sortedMantri[d.row.index]; if(a){ d.cell.styles.textColor=hexRGB(nplHex(a.npl)); d.cell.styles.fontStyle="bold"; } } },
+    });
+    // Halaman terpisah untuk grafik (sama seperti tampilan web)
+    const barRowsOs  = [...sortedMantri.filter(a=>a.key!=="__none__"&&a.osJt>0)].sort((a,b)=>b.osJt-a.osJt).slice(0,20).map(a=>({ label:a.nama, value:a.osJt/1000 }));
+    const barRowsRsk = [...sortedMantri.filter(a=>a.key!=="__none__"&&a.tinggi>0)].sort((a,b)=>b.tinggi-a.tinggi).slice(0,20).map(a=>({ label:a.nama, value:a.tinggi }));
+    if (barRowsOs.length || barRowsRsk.length) {
+      doc.addPage();
+      doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(15,42,80);
+      doc.text(`Grafik Kinerja RM/Mantri — ${selUker.nama}`, 40, 40);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(120,120,120);
+      doc.text(`Periode ${m.P.date}`, 40, 55);
+      const colW = (pw-80-20)/2;
+      drawBarsPDF(doc, { x:40,           y:88, w:colW, h:450, title:"Outstanding per RM/Mantri (Rp M)",      rows:barRowsOs,  valFmt:v=>fR(v),                colorHex:"0D9488" });
+      drawBarsPDF(doc, { x:40+colW+20,   y:88, w:colW, h:450, title:"Debitur Risiko Tinggi per RM/Mantri",   rows:barRowsRsk, valFmt:v=>String(Math.round(v)), colorHex:"DC2626" });
+    }
+    doc.save(mantriFileName("pdf"));
+  };
+
+  // Kolom + ekspor tabel Daftar Debitur (level detail RM/Mantri) — ekspor SELURUH baris (semua halaman digabung)
+  const dpdHex   = (v)=> v>30?"C0282D":v>0?"B45309":"15803D";
+  const riskHexT = (t)=> t==="tinggi"?"C0282D":t==="sedang"?"B45309":"15803D";
+  const debCols = [
+    { key:"cif",     label:"CIF",              align:"left",   type:"text", get:d=>d.cif },
+    { key:"nama",    label:"Nama Debitur",     align:"left",   type:"text", get:d=>d.nama },
+    { key:"sektor",  label:"Sektor Usaha",     align:"left",   type:"text", get:d=>d.sektor||"-" },
+    { key:"osJt",    label:"Outstanding (Jt)", align:"right",  type:"num",  get:d=>Math.round(d.osJt) },
+    { key:"kol",     label:"Kol",              align:"center", type:"text", get:d=>`Kol ${d.kol}` },
+    { key:"restruk", label:"Restruk",          align:"center", type:"text", get:d=>d.flagRestruk==='Y'?'Y':'N' },
+    { key:"dpd",     label:"DPD",              align:"right",  type:"num",  get:d=>d.dpd||0 },
+    { key:"risiko",  label:"Status Risiko",    align:"left",   type:"text", get:d=>risikoLabel[d.tier]||"-" },
+  ];
+  const debKpiExp = () => (selAO!==null ? [
+    { label:"Total Debitur", val:fNum(aoItems.length) },
+    { label:"Outstanding",   val:fJt(aoItems.reduce((s,d)=>s+d.osJt*f,0)) },
+    { label:"Risiko Tinggi", val:fNum(aoItems.filter(d=>d.tier==="tinggi").length) },
+    { label:"NPL Ratio",     val:fPct(aoObj?.npl||0,1) },
+  ] : []);
+  const debFileName = (ext) => `Debitur_${(aoObj?.nama||"RM").replace(/[^\w]+/g,"_")}_${new Date().toISOString().slice(0,10)}.${ext}`;
+  const debExportExcel = () => {
+    if (selAO===null) return;
+    const cols = debCols, nC = cols.length, kpis = debKpiExp(), rows = filteredDebitur;
+    const aoa = [];
+    aoa.push([`Daftar Debitur — ${aoObj?.nama||""}`]);                 // r0 judul
+    aoa.push([`${selUker?.nama||""} · Periode ${m.P.date}`]);          // r1
+    aoa.push([]);                                                      // r2
+    aoa.push(cols.map((_,i)=> i<4 ? kpis[i].label : ""));             // r3 label KPI
+    aoa.push(cols.map((_,i)=> i<4 ? kpis[i].val   : ""));             // r4 nilai KPI
+    aoa.push([]);                                                      // r5
+    const hR = 6;
+    aoa.push(cols.map(c=>c.label));                                    // r6 header
+    rows.forEach(d=> aoa.push(cols.map(c=>c.get(d))));                 // data (semua baris)
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = cols.map((c)=>({ wch: c.key==="nama"?26 : c.key==="sektor"?18 : c.key==="risiko"?16 : 13 }));
+    ws["!merges"] = [{ s:{r:0,c:0}, e:{r:0,c:nC-1} }, { s:{r:1,c:0}, e:{r:1,c:nC-1} }];
+    const thin=(rgb)=>({ style:"thin", color:{ rgb } });
+    const border={ top:thin("E5E7EB"), bottom:thin("E5E7EB"), left:thin("E5E7EB"), right:thin("E5E7EB") };
+    if(ws["A1"]) ws["A1"].s={ font:{ bold:true, sz:13, color:{rgb:"1B2A6E"} } };
+    if(ws["A2"]) ws["A2"].s={ font:{ sz:10, color:{rgb:"6B7280"} } };
+    for(let i=0;i<4;i++){
+      const la=XLSX.utils.encode_cell({r:3,c:i}), va=XLSX.utils.encode_cell({r:4,c:i});
+      if(ws[la]) ws[la].s={ fill:{patternType:"solid",fgColor:{rgb:M_NAVY}}, font:{bold:true,sz:9,color:{rgb:"FFFFFF"}}, alignment:{horizontal:"center",vertical:"center"}, border };
+      if(ws[va]) ws[va].s={ fill:{patternType:"solid",fgColor:{rgb:"F4F7FB"}}, font:{bold:true,sz:12,color:{rgb:"111827"}}, alignment:{horizontal:"center",vertical:"center"}, border };
+    }
+    for(let c=0;c<nC;c++){ const a=XLSX.utils.encode_cell({r:hR,c}); if(ws[a]) ws[a].s={ fill:{patternType:"solid",fgColor:{rgb:M_NAVY}}, font:{bold:true,color:{rgb:"FFFFFF"},sz:10}, alignment:{horizontal:"center",vertical:"center",wrapText:true}, border }; }
+    rows.forEach((d,ri)=>{
+      const bg = ri%2 ? "F4F7FB" : "FFFFFF";
+      for(let c=0;c<nC;c++){ const col=cols[c]; const ad=XLSX.utils.encode_cell({r:hR+1+ri,c}); if(!ws[ad]) continue;
+        const st={ fill:{patternType:"solid",fgColor:{rgb:bg}}, font:{sz:10,color:{rgb:"344054"}}, alignment:{horizontal:col.align,vertical:"center"}, border };
+        if(col.key==="dpd")    { st.font.color={rgb:dpdHex(d.dpd||0)}; st.font.bold=true; }
+        if(col.key==="risiko") { st.font.color={rgb:riskHexT(d.tier)}; st.font.bold=true; }
+        if(col.key==="restruk" && d.flagRestruk==='Y') { st.font.color={rgb:"B45309"}; st.font.bold=true; }
+        ws[ad].s=st;
+        if(col.type==="num") ws[ad].z='#,##0';
+      }
+    });
+    ws["!rows"]=[{hpt:20},{hpt:14},{hpt:6},{hpt:16},{hpt:24},{hpt:6},{hpt:22}];
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Daftar Debitur");
+    XLSX.writeFile(wb, debFileName("xlsx"));
+  };
+  const debExportPDF = () => {
+    if (selAO===null) return;
+    const rows = filteredDebitur;
+    const doc = new jsPDF({ orientation:"landscape", unit:"pt", format:"a4" });
+    const pw = doc.internal.pageSize.getWidth();
+    doc.setFontSize(13); doc.setTextColor(15,42,80); doc.text(`Daftar Debitur — ${aoObj?.nama||""}`, 40, 40);
+    doc.setFontSize(9); doc.setTextColor(120,120,120); doc.text(`${selUker?.nama||""} · Periode ${m.P.date} · ${fNum(rows.length)} debitur`, 40, 56);
+    const kpis = debKpiExp();
+    const cardY=70, cardH=46, gap=12, cardW=(pw-80-gap*3)/4;
+    kpis.forEach((k,i)=>{
+      const x=40+i*(cardW+gap);
+      doc.setDrawColor(229,231,235); doc.setFillColor(248,250,252);
+      doc.roundedRect(x,cardY,cardW,cardH,4,4,"FD");
+      doc.setFontSize(7.5); doc.setTextColor(107,114,128); doc.text(k.label.toUpperCase(), x+12, cardY+17);
+      doc.setFontSize(13); doc.setTextColor(17,24,39); doc.text(String(k.val), x+12, cardY+36);
+    });
+    autoTable(doc, {
+      startY: cardY+cardH+16,
+      showHead:"everyPage",   // header tabel diulang tiap halaman
+      head:[debCols.map(c=>c.label)],
+      body: rows.map(d=>debCols.map(c=> c.type==="num" ? Number(c.get(d)).toLocaleString("en-US") : String(c.get(d)))),
+      styles:{ fontSize:8.5, cellPadding:4, lineColor:[229,231,235], lineWidth:0.5, valign:"middle" },
+      headStyles:{ fillColor:hexRGB(M_NAVY), textColor:255, fontStyle:"bold", halign:"center" },
+      alternateRowStyles:{ fillColor:[244,247,251] },
+      columnStyles: Object.fromEntries(debCols.map((c,i)=>[i,{ halign:c.align }])),
+      margin:{ left:40, right:40 },
+      didParseCell:(dc)=>{ if(dc.section!=="body") return; const col=debCols[dc.column.index]; const d=rows[dc.row.index]; if(!d) return;
+        if(col.key==="dpd")    { dc.cell.styles.textColor=hexRGB(dpdHex(d.dpd||0)); dc.cell.styles.fontStyle="bold"; }
+        if(col.key==="risiko") { dc.cell.styles.textColor=hexRGB(riskHexT(d.tier)); dc.cell.styles.fontStyle="bold"; }
+        if(col.key==="restruk" && d.flagRestruk==='Y') { dc.cell.styles.textColor=hexRGB("B45309"); dc.cell.styles.fontStyle="bold"; }
+      },
+    });
+    doc.save(debFileName("pdf"));
+  };
+
   const kolOpts = ["semua","1","2A","2B","3","4","5"].map(v=>({ value:v, label:v==="semua"?"Semua Kolektibilitas":`Kol ${v}` }));
   const risOpts = [{ value:"semua",label:"Semua Risiko" },{ value:"Risiko Tinggi",label:"Risiko Tinggi" },{ value:"Risiko Sedang",label:"Risiko Sedang" },{ value:"Risiko Rendah",label:"Risiko Rendah" }];
-
-  // Sticky filter bar — rendered OUTSIDE any overflow:hidden card
-  const filterBarSt = { display:"flex", gap:8, flexWrap:"wrap", alignItems:"center", marginBottom:4 };
 
   // Breadcrumb
   const crumb = (
@@ -1725,55 +2569,75 @@ function KinerjaUnit({ m, list }) {
           { label:"NPL Ratio",     val:fPct(aoObj?.npl||0,1), color:nplColor(aoObj?.npl||0) },
         ])}
 
-        {/* Sticky filter bar — outside card so overflow:hidden doesn't block sticky */}
-        <div style={filterBarSt}>
-          <Select value={kolFilter}    onChange={e=>{ setKolFilter(e.target.value);    setDebPage(1); }} options={kolOpts} />
-          <Select value={risikoFilter} onChange={e=>{ setRisikoFilter(e.target.value); setDebPage(1); }} options={risOpts} />
-          <Select value={debSort} onChange={e=>{ setDebSort(e.target.value); setDebPage(1); }} options={debSortOpts} />
-          <span style={{ marginLeft:"auto", fontSize:12.5, color:C.gray }}>{fNum(filteredDebitur.length)} debitur</span>
-        </div>
-
         <div style={{ ...card, padding:0, overflow:"hidden" }}>
-          <div style={{ padding:"12px 16px 6px" }}><CardTitle>Daftar Debitur — {aoObj?.nama||""}</CardTitle></div>
-          {filteredDebitur.length === 0
-            ? <div style={{ padding:24, textAlign:"center", color:C.gray, fontSize:13 }}>Tidak ada debitur sesuai filter.</div>
-            : <>
-                <div style={{ overflowX:"auto" }}>
-                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5, tableLayout:"fixed" }}>
-                    <thead>
-                      <tr>
-                        {["CIF","Nama Debitur","Sektor Usaha","Outstanding","Kol","DPD","Skor","Status Risiko"].map((h,i)=>(
-                          <th key={i} style={{ padding:"9px 12px", color:C.gray, fontWeight:600, fontSize:10.5, textTransform:"uppercase", textAlign:"left", width:[88,170,100,110,46,50,56,120][i], whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}`, background:C.grayLt }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {paged.map((d, ri) => {
-                        const isExp = expandedCif === d.cif;
-                        const dpd2  = d.dpd || 0;
-                        return [
-                          <tr key={d.cif+ri} onClick={()=>setExpandedCif(isExp?null:d.cif)}
-                            style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}
-                            onMouseEnter={e=>{ e.currentTarget.style.filter="brightness(0.97)"; }}
-                            onMouseLeave={e=>{ e.currentTarget.style.filter="none"; }}>
-                            <td style={{ padding:"9px 12px", color:C.textMd, fontFamily:"monospace", fontSize:11.5 }}>{d.cif}</td>
-                            <td style={{ padding:"9px 12px", color:C.text, fontWeight:600 }}>{d.nama}</td>
-                            <td style={{ padding:"9px 12px", color:C.textMd }}>{d.sektor}</td>
-                            <td style={{ padding:"9px 12px", fontWeight:500, color:C.textMd }}>{fJt(d.osJt)}</td>
-                            <td style={{ padding:"9px 12px" }}><KolBadge k={d.kol} /></td>
-                            <td style={{ padding:"9px 12px", color:dpd2>30?C.red:dpd2>0?C.amber:C.green, fontWeight:600 }}>{dpd2}</td>
-                            <td style={{ padding:"9px 12px" }}><SkorPill s={d.skor} /></td>
-                            <td style={{ padding:"9px 12px" }}><Badge level={d.tier} /></td>
-                          </tr>,
-                          isExp && <BreakdownRow key={d.cif+ri+"-exp"} d={d} colSpan={8} />,
-                        ];
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <Pagination pg={curPg} total={totalPg} set={(p)=>{ setDebPage(p); setExpandedCif(null); }} />
-              </>
-          }
+          <div style={{ padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${C.border}`, flexWrap:"wrap", gap:8 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>Daftar Debitur — {aoObj?.nama||""}</div>
+            <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+              <span style={{ fontSize:12, color:C.gray }}>Baris/hal:</span>
+              <input type="text" inputMode="numeric" value={debPerPage} onChange={e=>{ const v=e.target.value.replace(/\D/g,""); setDebPerPage(Math.max(1, Math.min(1000, parseInt(v)||20))); setDebPage(1); }}
+                style={{ width:54, padding:"4px 8px", border:`1px solid ${C.border}`, borderRadius:6, fontSize:12.5, color:C.text, textAlign:"right" }} />
+              {anyDebFilter && <button onClick={resetDebFilters} style={{ fontSize:12, color:C.navy, background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"4px 10px", cursor:"pointer" }}>Reset Filter</button>}
+              <span style={{ fontSize:12.5, color:C.gray, marginRight:2 }}>{fNum(filteredDebitur.length)} debitur</span>
+              <button onClick={debExportExcel} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", background:C.kpiGreen, color:"#fff", border:"none", borderRadius:7, fontSize:12, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={14} /> Excel</button>
+              <button onClick={debExportPDF}   style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", background:C.kpiRed, color:"#fff", border:"none", borderRadius:7, fontSize:12, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={14} /> PDF</button>
+            </div>
+          </div>
+          <div style={{ overflowX:"auto", overflowY:"auto", maxHeight:"62vh" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5, tableLayout:"fixed" }}>
+              <colgroup>{[90,180,120,116,60,72,60,120].map((cw,i)=><col key={i} style={{ width:cw }} />)}</colgroup>
+              <thead>
+                <tr>
+                  <th style={navyTh()}>CIF</th>
+                  <th style={navyTh()}>Nama Debitur</th>
+                  <th style={navyTh()}>Sektor Usaha</th>
+                  <th style={navyTh("right")}>Outstanding</th>
+                  <th style={navyTh("center")}>Kol</th>
+                  <th style={navyTh("center")}>Restruk</th>
+                  <th style={navyTh("center")}>DPD</th>
+                  <th style={navyTh()}>Status Risiko</th>
+                </tr>
+                <tr>
+                  <th style={filtTh}></th>
+                  <th style={filtTh}><input value={debCari} onChange={onDF(setDebCari)} placeholder="Cari nama/CIF…" style={hInpSt} /></th>
+                  <th style={filtTh}><select value={debSektorF} onChange={onDF(setDebSektorF)} style={hSelSt}><option value="semua">Semua Sektor</option>{sektorListLvl2.map(s=><option key={s} value={s}>{s}</option>)}</select></th>
+                  <th style={filtTh}><select value={osSort} onChange={setColSort("os")} style={hSelSt}>{sortOpts3.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                  <th style={filtTh}><select value={kolFilter} onChange={onDF(setKolFilter)} style={hSelSt}>{kolOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                  <th style={filtTh}><select value={restrukFilter} onChange={onDF(setRestrukFilter)} style={hSelSt}><option value="semua">Semua</option><option value="Y">Y</option><option value="N">N</option></select></th>
+                  <th style={filtTh}><select value={dpdSort} onChange={setColSort("dpd")} style={hSelSt}>{sortOpts3.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                  <th style={filtTh}><select value={risikoFilter} onChange={onDF(setRisikoFilter)} style={hSelSt}>{risOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredDebitur.length === 0
+                  ? <tr><td colSpan={8} style={{ padding:24, textAlign:"center", color:C.gray, fontSize:13 }}>Tidak ada debitur sesuai filter.</td></tr>
+                  : paged.map((d, ri) => {
+                      const isExp = expandedCif === d.cif;
+                      const dpd2  = d.dpd || 0;
+                      return [
+                        <tr key={d.cif+ri} onClick={()=>setExpandedCif(isExp?null:d.cif)}
+                          style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}
+                          onMouseEnter={e=>{ e.currentTarget.style.filter="brightness(0.97)"; }}
+                          onMouseLeave={e=>{ e.currentTarget.style.filter="none"; }}>
+                          <td style={{ padding:"9px 12px", color:C.textMd, fontFamily:"monospace", fontSize:11.5 }}>{d.cif}</td>
+                          <td style={{ padding:"9px 12px", color:C.text, fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{d.nama}</td>
+                          <td style={{ padding:"9px 12px", color:C.textMd }}>{d.sektor}</td>
+                          <td style={{ padding:"9px 12px", fontWeight:500, color:C.textMd, textAlign:"right" }}>{fJt(d.osJt)}</td>
+                          <td style={{ padding:"9px 12px", textAlign:"center" }}><KolBadge k={d.kol} /></td>
+                          <td style={{ padding:"9px 12px", textAlign:"center" }}>
+                            {d.flagRestruk === 'Y'
+                              ? <span style={{ fontSize:10.5, fontWeight:700, color:C.amber, background:C.amberLt, padding:"2px 7px", borderRadius:4 }}>Y</span>
+                              : <span style={{ fontSize:10.5, color:C.gray }}>N</span>}
+                          </td>
+                          <td style={{ padding:"9px 12px", color:dpd2>30?C.red:dpd2>0?C.amber:C.green, fontWeight:600, textAlign:"center" }}>{dpd2}</td>
+                          <td style={{ padding:"9px 12px" }}><Badge level={d.tier} /></td>
+                        </tr>,
+                        isExp && <BreakdownRow key={d.cif+ri+"-exp"} d={d} colSpan={8} />,
+                      ];
+                    })}
+              </tbody>
+            </table>
+          </div>
+          <Pagination pg={curPg} total={totalPg} set={(p)=>{ setDebPage(p); setExpandedCif(null); }} />
         </div>
       </div>
     );
@@ -1790,6 +2654,62 @@ function KinerjaUnit({ m, list }) {
           { label:"NPL Ratio",     val:fPct(selUker.npl,1),  color:nplColor(selUker.npl) },
           { label:"Risiko Tinggi", val:fNum(selUker.tinggi),  color:C.kpiRed },
         ])}
+        <div style={{ ...card, padding:0, overflow:"hidden" }}>
+          <div style={{ padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${C.border}`, flexWrap:"wrap", gap:8 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>Rekap Kinerja per RM/Mantri — {selUker.nama}</div>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              {anyMantriFilter && <button onClick={resetMantriFilters} style={{ fontSize:12, color:C.navy, background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"4px 10px", cursor:"pointer" }}>Reset Filter</button>}
+              <span style={{ fontSize:12.5, color:C.gray, marginRight:2 }}>{sortedMantri.length} RM/Mantri</span>
+              <button onClick={mantriExportExcel} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", background:C.kpiGreen, color:"#fff", border:"none", borderRadius:7, fontSize:12, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={14} /> Excel</button>
+              <button onClick={mantriExportPDF}   style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", background:C.kpiRed, color:"#fff", border:"none", borderRadius:7, fontSize:12, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={14} /> PDF</button>
+            </div>
+          </div>
+          <div style={{ overflowX:"auto", overflowY:"auto", maxHeight:"60vh" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5, tableLayout:"fixed" }}>
+              <colgroup>{[170,92,78,120,150,100,110].map((cw,i)=><col key={i} style={{ width:cw }} />)}</colgroup>
+              <thead>
+                <tr>
+                  <th style={navyTh()}>RM/Mantri</th>
+                  <th style={navyTh()}>PN</th>
+                  <th style={navyTh("right")}>Debitur</th>
+                  <th style={navyTh("right")}>Outstanding</th>
+                  <th style={navyTh()}>Kol Bermasalah</th>
+                  <th style={navyTh("right")}>NPL Ratio</th>
+                  <th style={navyTh("right")}>CKPN</th>
+                </tr>
+                <tr>
+                  <th style={filtTh}><input value={mantriCari} onChange={e=>setMantriCari(e.target.value)} placeholder="Cari nama/PN…" style={hInpSt} /></th>
+                  <th style={filtTh}></th>
+                  <th style={filtTh}><select value={mDebSort} onChange={setMSort("deb")} style={hSelSt}>{sortOpts3.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                  <th style={filtTh}><select value={mOsSort} onChange={setMSort("os")} style={hSelSt}>{sortOpts3.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                  <th style={filtTh}><select value={mantriKolFilter} onChange={e=>setMantriKolFilter(e.target.value)} style={hSelSt}>{kolOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                  <th style={filtTh}><select value={mNplSort} onChange={setMSort("npl")} style={hSelSt}>{sortOpts3.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                  <th style={filtTh}><select value={mCkpnSort} onChange={setMSort("ckpn")} style={hSelSt}>{sortOpts3.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedMantri.length === 0
+                  ? <tr><td colSpan={7} style={{ padding:24, textAlign:"center", color:C.gray, fontSize:13 }}>Tidak ada RM/Mantri sesuai filter.</td></tr>
+                  : sortedMantri.map((a, ri)=>(
+                      <tr key={a.key} onClick={()=>setSelAO(a.key)}
+                        style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}
+                        onMouseEnter={e=>{ e.currentTarget.style.filter="brightness(0.97)"; }}
+                        onMouseLeave={e=>{ e.currentTarget.style.filter="none"; }}>
+                        <td style={{ padding:"9px 12px", fontWeight:600, color:a.key==="__none__"?C.gray:C.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{a.nama}</td>
+                        <td style={{ padding:"9px 12px", fontFamily:"monospace", fontSize:11.5, color:C.navy }}>{a.pn||"—"}</td>
+                        <td style={{ padding:"9px 12px", color:C.textMd, textAlign:"right" }}>{fNum(a.deb)}</td>
+                        <td style={{ padding:"9px 12px", color:C.textMd, fontWeight:500, textAlign:"right" }}>{fJt(a.osJt)}</td>
+                        <td style={{ padding:"9px 12px", color:a.tinggi>0?C.red:C.green, fontWeight:600 }}>{a.tinggi} tinggi · {a.sedang} sedang</td>
+                        <td style={{ padding:"9px 12px", color:nplColor(a.npl), fontWeight:600, textAlign:"right" }}>{fPct(a.npl,1)}</td>
+                        <td style={{ padding:"9px 12px", color:C.textMd, textAlign:"right" }}>{fJt(a.ckpn)}</td>
+                      </tr>
+                    ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Grafik di bawah tabel */}
         <div style={{ display:"grid", gridTemplateColumns: w>=1000?"1fr 1fr":"1fr", gap:12 }}>
           <div style={card}>
             <CardTitle>Outstanding per RM/Mantri</CardTitle>
@@ -1802,32 +2722,6 @@ function KinerjaUnit({ m, list }) {
               onBarClick={entry=>{ const a=mantriList.find(x=>x.nama===entry.nama); if(a) setSelAO(a.key); }} />
           </div>
         </div>
-
-        {/* Filter bar untuk daftar mantri */}
-        <div style={filterBarSt}>
-          <Select value={mantriKolFilter} onChange={e=>setMantriKolFilter(e.target.value)} options={kolOpts} />
-          <Select value={mantriRisFilter} onChange={e=>setMantriRisFilter(e.target.value)} options={risOpts} />
-          <Select value={mantriSort}      onChange={e=>setMantriSort(e.target.value)}       options={mantriSortOpts} />
-          <span style={{ marginLeft:"auto", fontSize:12.5, color:C.gray }}>{sortedMantri.length} RM/Mantri</span>
-        </div>
-
-        <div style={{ ...card, padding:0, overflow:"hidden" }}>
-          <div style={{ padding:"12px 16px 6px" }}><CardTitle>Rekap Kinerja per RM/Mantri — {selUker.nama}</CardTitle></div>
-          <Tabel
-            headers={["RM/Mantri","PN","Debitur","Outstanding","Kol Bermasalah","NPL Ratio","CKPN"]}
-            colW={[160,90,80,120,140,100,120]}
-            onRowClick={ri=>setSelAO(sortedMantri[ri].key)}
-            rows={sortedMantri.map(a=>[
-              <span style={{ fontWeight:600, color:a.key==="__none__"?C.gray:C.text }}>{a.nama}</span>,
-              <span style={{ fontFamily:"monospace", fontSize:11.5, color:C.navy }}>{a.pn||"—"}</span>,
-              fNum(a.deb),
-              fJt(a.osJt),
-              <span style={{ color:a.tinggi>0?C.red:C.green, fontWeight:600 }}>{a.tinggi} tinggi · {a.sedang} sedang</span>,
-              <span style={{ color:nplColor(a.npl), fontWeight:600 }}>{fPct(a.npl,1)}</span>,
-              fJt(a.ckpn),
-            ])}
-          />
-        </div>
       </div>
     );
   }
@@ -1835,12 +2729,53 @@ function KinerjaUnit({ m, list }) {
   /* ── LEVEL 0: Daftar unit ── */
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-      {/* Sort bar untuk daftar unit */}
-      <div style={filterBarSt}>
-        <Select value={unitSort} onChange={e=>setUnitSort(e.target.value)} options={unitSortOpts} />
-        <span style={{ marginLeft:"auto", fontSize:12.5, color:C.gray }}>{m.perUker.length} unit kerja</span>
+      {/* Bar atas: jumlah unit + ekspor */}
+      <div style={{ display:"flex", justifyContent:"flex-end", gap:8, alignItems:"center" }}>
+        <span style={{ fontSize:12.5, color:C.gray }}>{m.perUker.length} unit kerja</span>
+        <button onClick={ukExportExcel} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", background:C.kpiGreen, color:"#fff", border:"none", borderRadius:7, fontSize:12, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={14} /> Excel</button>
+        <button onClick={ukExportPDF}   style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", background:C.kpiRed, color:"#fff", border:"none", borderRadius:7, fontSize:12, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={14} /> PDF</button>
       </div>
 
+      {/* Tabel rekap — header navy + urutan per kolom ala Excel (sticky) */}
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${C.border}` }}>
+          <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>Rekap Kinerja per Unit Kerja</div>
+          {unitSort!=="default" && <button onClick={()=>setUnitSort("default")} style={{ fontSize:12, color:C.navy, background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"4px 10px", cursor:"pointer" }}>Urutan Default</button>}
+        </div>
+        <div style={{ overflowX:"auto", overflowY:"auto", maxHeight:"64vh" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5, tableLayout:"fixed" }}>
+            <colgroup>{[220,150,110,130,140,140].map((cw,i)=><col key={i} style={{ width:cw }} />)}</colgroup>
+            <thead>
+              <tr>
+                {ukCols.map((c,i)=>(
+                  <th key={i} style={navyTh(c.align)}>{c.label}</th>
+                ))}
+              </tr>
+              <tr>
+                {ukCols.map((c,i)=>{
+                  if (c.key==="nama") return <th key={i} style={filtTh}></th>;
+                  const tok = ukColTok[c.key];
+                  return <th key={i} style={filtTh}><select value={colSortVal(tok)} onChange={setUkSort(tok)} style={hSelSt}>{sortOpts3.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>;
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedUker.map((u,ri)=>(
+                <tr key={u.kode} onClick={()=>setSelUker(u)} style={{ background:ri%2?C.grayLt:C.white, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}
+                  onMouseEnter={e=>e.currentTarget.style.filter="brightness(0.97)"} onMouseLeave={e=>e.currentTarget.style.filter="none"}>
+                  {ukCols.map((c,ci)=>(
+                    <td key={ci} style={{ padding:"9px 14px", textAlign:c.align, whiteSpace:"nowrap",
+                      color: c.key==="npl"?nplColor(u.npl) : c.key==="nama"?C.text : C.textMd,
+                      fontWeight: (c.key==="nama"||c.key==="npl")?600:400 }}>{c.render(u)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Grafik di bawah tabel */}
       <div style={{ display:"grid", gridTemplateColumns: w>=1000?"1fr 1fr":"1fr", gap:12 }}>
         <div style={card}>
           <CardTitle>Outstanding per Unit Kerja</CardTitle>
@@ -1852,21 +2787,6 @@ function KinerjaUnit({ m, list }) {
           <BarH data={[...m.perUker].sort((a,b)=>b.npl-a.npl)} dataKey="npl" nameKey="nama" color={C.kpiRed} fmt={(v)=>fPct(v,1)}
             onBarClick={entry=>setSelUker(m.perUker.find(u=>u.nama===entry.nama))} />
         </div>
-      </div>
-      <div style={{ ...card, padding:0, overflow:"hidden" }}>
-        <div style={{ padding:"14px 16px 6px" }}><CardTitle>Rekap Kinerja per Unit Kerja</CardTitle></div>
-        <Tabel
-          headers={["Unit Kerja","Outstanding","Debitur","NPL Ratio","CKPN","Recovery Rate"]}
-          colW={[150,120,90,100,120,120]}
-          onRowClick={ri=>setSelUker(sortedUker[ri])}
-          rows={sortedUker.map(u=>[
-            <span style={{ fontWeight:600 }}>{u.nama}</span>,
-            fJt(u.osJt), fNum(u.deb),
-            <span style={{ color:nplColor(u.npl), fontWeight:600 }}>{fPct(u.npl,1)}</span>,
-            fJt(u.ckpn),
-            <span style={{ color:C.green, fontWeight:600 }}>{u.recovery}%</span>,
-          ])}
-        />
       </div>
     </div>
   );
@@ -1907,9 +2827,9 @@ function downloadReport(type, m, list) {
     ], [4,8,22,16,12,12,13,12,12]);
     addSheet("Daftar Debitur", [
       [`DAFTAR DEBITUR — ${tgl}`],[],
-      ["No","CIF","Nama Debitur","Unit Kerja","RM/Mantri","PN","Segment","Sektor","Outstanding (Jt)","Kolektibilitas","DPD","Skor","Status Risiko"],
-      ...list.map((d,i)=>[i+1, d.cif, d.nama, d.ukerNama, d.ao, d.pn||"", d.segment, d.sektor, Math.round(d.osJt), d.kol, d.dpd, d.skor, risikoLabel[d.tier]||d.tier]),
-    ], [4,12,30,20,25,10,10,12,16,12,6,6,14]);
+      ["No","CIF","Nama Debitur","Unit Kerja","RM/Mantri","PN","Segment","Sektor","Outstanding (Jt)","Kolektibilitas","DPD","Status Risiko"],
+      ...list.map((d,i)=>[i+1, d.cif, d.nama, d.ukerNama, d.ao, d.pn||"", d.segment, d.sektor, Math.round(d.osJt), d.kol, d.dpd, risikoLabel[d.tier]||d.tier]),
+    ], [4,12,30,20,25,10,10,12,16,12,6,14]);
     addSheet("Distribusi Kolektibilitas", [
       [`DISTRIBUSI KOLEKTIBILITAS — ${tgl}`],[],
       ["Kolektibilitas","Label","Jumlah Debitur","Persentase (%)","Outstanding (Jt)"],
@@ -1932,9 +2852,9 @@ function downloadReport(type, m, list) {
     ], [28,16,14,12]);
     addSheet("Debitur Risiko Tinggi", [
       [`DEBITUR RISIKO TINGGI — ${tgl}`],[],
-      ["No","CIF","Nama Debitur","Unit Kerja","RM/Mantri","PN","Outstanding (Jt)","DPD","Kolektibilitas","Skor","Tunggakan Est. (Jt)"],
-      ...tinggiList.map((d,i)=>[i+1, d.cif, d.nama, d.ukerNama, d.ao, d.pn||"", Math.round(d.osJt), d.dpd, d.kol, d.skor, Math.round(d.tunggakanTotal||0)]),
-    ], [4,12,30,20,25,10,16,6,12,6,18]);
+      ["No","CIF","Nama Debitur","Unit Kerja","RM/Mantri","PN","Outstanding (Jt)","DPD","Kolektibilitas","Tunggakan Est. (Jt)"],
+      ...tinggiList.map((d,i)=>[i+1, d.cif, d.nama, d.ukerNama, d.ao, d.pn||"", Math.round(d.osJt), d.dpd, d.kol, Math.round(d.tunggakanTotal||0)]),
+    ], [4,12,30,20,25,10,16,6,12,18]);
     addSheet("EWS Per Unit Kerja", [
       [`EWS PER UNIT KERJA — ${tgl}`],[],
       ["No","Unit Kerja","Total Debitur","Risiko Tinggi","Risiko Sedang","Risiko Rendah","NPL Ratio (%)"],
@@ -2055,15 +2975,21 @@ function Laporan({ m, list, perms }) {
   );
 }
 
-function OsKurang50({ list }) {
+function OsKurang50({ list, m }) {
   const [selUker, setSelUker] = useState(null);
   const [debPage, setDebPage] = useState(1);
-  const [debSort, setDebSort] = useState("os");
+  // Filter per-kolom (gaya tabel terbaru)
+  const [osCari,    setOsCari]    = useState("");
+  const [osSektorF, setOsSektorF] = useState("semua");
+  const [osKolF,    setOsKolF]    = useState("semua");
+  const [restrukFilter, setRestrukFilter] = useState("semua");
+  const [sortBy,    setSortBy]    = useState("os-asc"); // <col>-asc|<col>-desc | "default"
   const [expandedCifs, setExpandedCifs] = useState(new Set());
   const [expandedLoan, setExpandedLoan] = useState(null);
   const PER_PAGE = 20;
 
-  useEffect(() => { setDebPage(1); setExpandedCifs(new Set()); setExpandedLoan(null); }, [selUker]);
+  const resetOsFilters = () => { setOsCari(""); setOsSektorF("semua"); setOsKolF("semua"); setRestrukFilter("semua"); setSortBy("os-asc"); setDebPage(1); };
+  useEffect(() => { setDebPage(1); setExpandedCifs(new Set()); setExpandedLoan(null); resetOsFilters(); }, [selUker]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Debitur dengan OS < 50% plafon (hanya yang plafonJt tersedia & > 0)
   const osFiltered = useMemo(() => list.filter(d => d.plafonJt > 0 && d.osJt < d.plafonJt * 0.5), [list]);
@@ -2083,15 +3009,34 @@ function OsKurang50({ list }) {
     return Object.values(m).sort((a,b) => b.items.length - a.items.length);
   }, [osFiltered]);
 
-  // Debitur di unit terpilih (CIF-grouped)
+  // Daftar sektor di unit terpilih (untuk dropdown filter)
+  const osSektorList = useMemo(() => {
+    if (!selUker) return [];
+    return [...new Set(osFiltered.filter(d => d.uker === selUker.kode).map(d => d.sektor).filter(Boolean))].sort();
+  }, [osFiltered, selUker]);
+
+  // Debitur di unit terpilih (CIF-grouped) — filter per kolom + 1 sort aktif
   const unitDebitur = useMemo(() => {
     if (!selUker) return [];
-    const items = osFiltered.filter(d => d.uker === selUker.kode);
-    const sorted = debSort === "os"     ? [...items].sort((a,b)=>a.osJt-b.osJt)
-                 : debSort === "plafon" ? [...items].sort((a,b)=>b.plafonJt-a.plafonJt)
-                 : [...items].sort((a,b)=>(a.osJt/a.plafonJt)-(b.osJt/b.plafonJt));
-    return groupByCif(sorted);
-  }, [selUker, osFiltered, debSort]);
+    const base = groupByCif(osFiltered.filter(d => d.uker === selUker.kode));
+    const cari = osCari.trim().toLowerCase();
+    const f = base.filter(g => {
+      const okCari    = !cari || g.nama.toLowerCase().includes(cari) || g.cif.toLowerCase().includes(cari);
+      const okSektor  = osSektorF === "semua" || g.loans.some(l => l.sektor === osSektorF);
+      const okKol     = osKolF === "semua" || g.loans.some(l => l.kol === osKolF);
+      const okRestruk = restrukFilter === "semua" || (g.flagRestruk || 'N') === restrukFilter;
+      return okCari && okSektor && okKol && okRestruk;
+    });
+    const plf = g => g.loans.reduce((s,l)=>s+l.plafonJt,0);
+    const pct = g => { const p = plf(g); return p > 0 ? g.totalOsJt/p : 0; };
+    const cmp = {
+      "os-asc":(a,b)=>a.totalOsJt-b.totalOsJt, "os-desc":(a,b)=>b.totalOsJt-a.totalOsJt,
+      "plafon-asc":(a,b)=>plf(a)-plf(b),        "plafon-desc":(a,b)=>plf(b)-plf(a),
+      "pct-asc":(a,b)=>pct(a)-pct(b),           "pct-desc":(a,b)=>pct(b)-pct(a),
+      "dpd-asc":(a,b)=>a.dpd-b.dpd,             "dpd-desc":(a,b)=>b.dpd-a.dpd,
+    }[sortBy];
+    return cmp ? [...f].sort(cmp) : f;
+  }, [selUker, osFiltered, osCari, osSektorF, osKolF, restrukFilter, sortBy]);
 
   const totalPage = Math.max(1, Math.ceil(unitDebitur.length / PER_PAGE));
   const pg = Math.min(debPage, totalPage);
@@ -2104,6 +3049,91 @@ function OsKurang50({ list }) {
     const pct = plafon > 0 ? (os/plafon*100).toFixed(1) : "—";
     return <span style={{ fontSize:10.5, background:"#FEF9C3", color:"#854D0E", borderRadius:4, padding:"1px 5px", fontWeight:600 }}>{pct}%</span>;
   };
+
+  // --- Desain tabel terbaru (header navy + sticky) & export Excel/PDF ---
+  const navyTh = (align="left")=>({ height:34, lineHeight:"34px", padding:"0 12px", background:`#${M_NAVY}`, color:"#fff", fontWeight:700, fontSize:10, textTransform:"uppercase", textAlign:align, whiteSpace:"nowrap", borderRight:"1px solid rgba(255,255,255,.12)", userSelect:"none", position:"sticky", top:0, zIndex:5 });
+  const dlBtn  = (bg)=>({ display:"flex", alignItems:"center", gap:6, padding:"6px 12px", background:bg, color:"#fff", border:"none", borderRadius:7, fontSize:12, fontWeight:600, cursor:"pointer" });
+  const dpdHex = (v)=> v>30?"C0282D":v>0?"B45309":"15803D";
+  const sumPlafon = (g)=> g.loans.reduce((s,l)=>s+l.plafonJt,0);
+  const pctVal    = (g)=>{ const p=sumPlafon(g); return p>0 ? g.totalOsJt/p*100 : 0; };
+  const osCols = [
+    { key:"cif",     label:"CIF",              align:"left",   type:"text", get:g=>g.cif },
+    { key:"nama",    label:"Nama Debitur",     align:"left",   type:"text", get:g=>g.nama },
+    { key:"ao",      label:"RM/Mantri",        align:"left",   type:"text", get:g=>g.ao },
+    { key:"sektor",  label:"Sektor",           align:"left",   type:"text", get:g=>g.sektor },
+    { key:"os",      label:"Outstanding (Jt)", align:"right",  type:"num",  get:g=>Math.round(g.totalOsJt) },
+    { key:"plafon",  label:"Plafon (Jt)",      align:"right",  type:"num",  get:g=>Math.round(sumPlafon(g)) },
+    { key:"pct",     label:"OS/Plafon (%)",    align:"right",  type:"num",  get:g=>+pctVal(g).toFixed(1) },
+    { key:"kol",     label:"Kol",              align:"center", type:"text", get:g=>g.kol },
+    { key:"restruk", label:"Restruk",          align:"center", type:"text", get:g=>g.flagRestruk==='Y'?'Y':'N' },
+    { key:"dpd",     label:"DPD",              align:"center", type:"num",  get:g=>g.dpd||0 },
+  ];
+  const osPeriode  = m?.P?.date || new Date().toLocaleDateString("id-ID");
+  const osFileBase = () => `OS_Kurang_50_${shortUker(selUker?.nama||"Unit").replace(/[^\w]+/g,"_")}_${new Date().toISOString().slice(0,10)}`;
+
+  const osExportExcel = () => {
+    const cols=osCols, nC=cols.length, rows=unitDebitur;
+    const aoa=[];
+    aoa.push([`Debitur OS < 50% Plafon — ${shortUker(selUker?.nama||"")}`]);
+    aoa.push([`Periode ${osPeriode} · ${fNum(rows.length)} debitur`]);
+    aoa.push([]);
+    const hR=3;
+    aoa.push(cols.map(c=>c.label));
+    rows.forEach(g=> aoa.push(cols.map(c=>c.get(g))));
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"]=cols.map(c=>({ wch: c.key==="nama"?26 : c.key==="ao"?20 : c.key==="cif"?12 : (c.key==="os"||c.key==="plafon")?14 : 11 }));
+    ws["!merges"]=[{s:{r:0,c:0},e:{r:0,c:nC-1}},{s:{r:1,c:0},e:{r:1,c:nC-1}}];
+    const thin=(rgb)=>({style:"thin",color:{rgb}});
+    const border={top:thin("E5E7EB"),bottom:thin("E5E7EB"),left:thin("E5E7EB"),right:thin("E5E7EB")};
+    if(ws["A1"]) ws["A1"].s={ font:{bold:true,sz:13,color:{rgb:"1B2A6E"}} };
+    if(ws["A2"]) ws["A2"].s={ font:{sz:10,color:{rgb:"6B7280"}} };
+    for(let c=0;c<nC;c++){ const a=XLSX.utils.encode_cell({r:hR,c}); if(ws[a]) ws[a].s={ fill:{patternType:"solid",fgColor:{rgb:M_NAVY}}, font:{bold:true,color:{rgb:"FFFFFF"},sz:10}, alignment:{horizontal:"center",vertical:"center",wrapText:true}, border }; }
+    rows.forEach((g,ri)=>{ const bg=ri%2?"F4F7FB":"FFFFFF";
+      for(let c=0;c<nC;c++){ const col=cols[c]; const ad=XLSX.utils.encode_cell({r:hR+1+ri,c}); if(!ws[ad]) continue;
+        const st={ fill:{patternType:"solid",fgColor:{rgb:bg}}, font:{sz:10,color:{rgb:"344054"}}, alignment:{horizontal:col.align,vertical:"center"}, border };
+        if(col.key==="dpd"){ st.font.color={rgb:dpdHex(g.dpd||0)}; st.font.bold=true; }
+        if(col.key==="restruk" && g.flagRestruk==='Y'){ st.font.color={rgb:"B45309"}; st.font.bold=true; }
+        ws[ad].s=st;
+        if(col.type==="num") ws[ad].z = col.key==="pct" ? '0.0' : '#,##0';
+      }
+    });
+    ws["!rows"]=[{hpt:20},{hpt:14},{hpt:6},{hpt:22}];
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"OS Kurang 50");
+    XLSX.writeFile(wb, osFileBase()+".xlsx");
+  };
+
+  const osExportPDF = () => {
+    const cols=osCols, rows=unitDebitur;
+    const doc=new jsPDF({ orientation:"landscape", unit:"pt", format:"a4" });
+    doc.setFontSize(13); doc.setTextColor(27,42,110); doc.text(`Debitur OS < 50% Plafon — ${shortUker(selUker?.nama||"")}`, 40, 40);
+    doc.setFontSize(9);  doc.setTextColor(120,120,120); doc.text(`Periode ${osPeriode} · ${fNum(rows.length)} debitur`, 40, 56);
+    autoTable(doc, {
+      startY:70, showHead:"everyPage",
+      head:[cols.map(c=>c.label)],
+      body: rows.map(g=>cols.map(c=> c.type==="num" ? Number(c.get(g)).toLocaleString("en-US") : String(c.get(g)))),
+      styles:{ fontSize:8.5, cellPadding:4, lineColor:[229,231,235], lineWidth:0.5, valign:"middle" },
+      headStyles:{ fillColor:hexRGB(M_NAVY), textColor:255, fontStyle:"bold", halign:"center" },
+      alternateRowStyles:{ fillColor:[244,247,251] },
+      columnStyles: Object.fromEntries(cols.map((c,i)=>[i,{ halign:c.align }])),
+      margin:{ left:40, right:40 },
+      didParseCell:(dc)=>{ if(dc.section!=="body") return; const col=cols[dc.column.index]; const g=rows[dc.row.index]; if(!g) return;
+        if(col.key==="dpd"){ dc.cell.styles.textColor=hexRGB(dpdHex(g.dpd||0)); dc.cell.styles.fontStyle="bold"; }
+        if(col.key==="restruk" && g.flagRestruk==='Y'){ dc.cell.styles.textColor=hexRGB("B45309"); dc.cell.styles.fontStyle="bold"; }
+      },
+    });
+    doc.save(osFileBase()+".pdf");
+  };
+
+  // --- Filter per-kolom (gaya tabel terbaru) ---
+  const hSelSt = { width:"100%", padding:"3px 4px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.textMd, cursor:"pointer", boxSizing:"border-box" };
+  const hInpSt = { width:"100%", padding:"3px 6px", border:`1px solid ${C.border}`, borderRadius:5, fontSize:11, background:C.white, color:C.text, boxSizing:"border-box" };
+  const filtTh = { padding:"5px 6px", background:C.grayLt, borderBottom:`1px solid ${C.border}`, position:"sticky", top:34, zIndex:5 };
+  const onF = (fn)=>(e)=>{ fn(e.target.value); setDebPage(1); };
+  const sortOpts = [{ value:"", label:"Default" },{ value:"desc", label:"Terbesar" },{ value:"asc", label:"Terkecil" }];
+  const colSortVal = (col)=> sortBy===`${col}-desc` ? "desc" : sortBy===`${col}-asc` ? "asc" : "";
+  const setColSort = (col)=>(e)=>{ const v=e.target.value; setSortBy(v?`${col}-${v}`:"default"); setDebPage(1); };
+  const osKolOpts = ["semua","1","2A","2B","3","4","5"].map(v=>({ value:v, label:v==="semua"?"Semua Kol":`Kol ${v}` }));
+  const anyOsFilter = osCari || osSektorF!=="semua" || osKolF!=="semua" || restrukFilter!=="semua" || sortBy!=="os-asc";
 
   if (!selUker) return (
     <div>
@@ -2119,7 +3149,7 @@ function OsKurang50({ list }) {
             <div key={u.kode} onClick={()=>setSelUker(u)} style={{ ...card, cursor:"pointer", transition:"box-shadow .15s" }}
               onMouseEnter={e=>e.currentTarget.style.boxShadow="0 4px 16px rgba(0,0,0,.1)"}
               onMouseLeave={e=>e.currentTarget.style.boxShadow=card.boxShadow}>
-              <div style={{ fontWeight:700, fontSize:14, color:C.navy, marginBottom:4 }}>{u.nama}</div>
+              <div style={{ fontWeight:700, fontSize:14, color:C.navy, marginBottom:4 }}>{shortUker(u.nama)}</div>
               <div style={{ fontSize:12, color:C.gray, marginBottom:12 }}>{u.kode}</div>
               <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
                 <span style={{ fontSize:13, color:C.text }}>{fNum(u.items.length)} debitur OS &lt; 50%</span>
@@ -2137,46 +3167,80 @@ function OsKurang50({ list }) {
   );
 
   return (
-    <div>
-      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:16 }}>
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
         <button onClick={()=>setSelUker(null)} style={{ ...pgBtn(false), padding:"6px 12px" }}>← Kembali</button>
-        <span style={{ fontWeight:600, fontSize:15, color:C.navy }}>{selUker.nama}</span>
-        <span style={{ fontSize:12, color:C.gray }}>— {fNum(unitDebitur.length)} nasabah OS &lt; 50% plafon</span>
-        <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
-          <Select value={debSort} onChange={e=>{ setDebSort(e.target.value); setDebPage(1); }}
-            options={[{ value:"os", label:"OS Terendah" },{ value:"pct", label:"Rasio OS/Plafon" },{ value:"plafon", label:"Plafon Tertinggi" }]} />
-        </div>
+        <span style={{ fontWeight:700, fontSize:15, color:C.navy }}>{shortUker(selUker.nama)}</span>
+        <span style={{ fontSize:12, color:C.gray }}>{selUker.kode} · {fNum(unitDebitur.length)} nasabah OS &lt; 50% plafon</span>
       </div>
       <div style={{ ...card, padding:0, overflow:"hidden" }}>
-        <div style={{ overflowX:"auto" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
+        <div style={{ padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${C.border}`, flexWrap:"wrap", gap:8 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>Debitur OS &lt; 50% Plafon</div>
+          <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+            {anyOsFilter && <button onClick={resetOsFilters} style={{ fontSize:12, color:C.navy, background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"4px 10px", cursor:"pointer" }}>Reset Filter</button>}
+            <span style={{ fontSize:12.5, color:C.gray, marginRight:2 }}>{fNum(unitDebitur.length)} debitur</span>
+            <button onClick={osExportExcel} style={dlBtn(C.kpiGreen)}><Ic n="download" size={14} /> Excel</button>
+            <button onClick={osExportPDF}   style={dlBtn(C.kpiRed)}><Ic n="download" size={14} /> PDF</button>
+          </div>
+        </div>
+        <div style={{ overflowX:"auto", overflowY:"auto", maxHeight:"64vh" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5, tableLayout:"fixed" }}>
+            <colgroup>{[86,170,124,98,112,96,104,64,80,66].map((cw,i)=><col key={i} style={{ width:cw }} />)}</colgroup>
             <thead>
               <tr>
-                {["CIF","Nama Debitur","RM/Mantri","Sektor","Outstanding","Plafon","OS / Plafon","Kol","DPD"].map((h,i)=>(
-                  <th key={i} style={{ padding:"9px 12px", color:C.gray, fontWeight:600, fontSize:10.5, textTransform:"uppercase", textAlign:"left", whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}`, background:C.grayLt }}>{h}</th>
-                ))}
+                <th style={navyTh()}>CIF</th>
+                <th style={navyTh()}>Nama Debitur</th>
+                <th style={navyTh()}>RM/Mantri</th>
+                <th style={navyTh()}>Sektor</th>
+                <th style={navyTh("right")}>Outstanding</th>
+                <th style={navyTh("right")}>Plafon</th>
+                <th style={navyTh("right")}>OS / Plafon</th>
+                <th style={navyTh("center")}>Kol</th>
+                <th style={navyTh("center")}>Restruk</th>
+                <th style={navyTh("center")}>DPD</th>
+              </tr>
+              <tr>
+                <th style={filtTh}></th>
+                <th style={filtTh}><input value={osCari} onChange={onF(setOsCari)} placeholder="Cari nama/CIF…" style={hInpSt} /></th>
+                <th style={filtTh}></th>
+                <th style={filtTh}><select value={osSektorF} onChange={onF(setOsSektorF)} style={hSelSt}><option value="semua">Semua Sektor</option>{osSektorList.map(s=><option key={s} value={s}>{s}</option>)}</select></th>
+                <th style={filtTh}><select value={colSortVal("os")}     onChange={setColSort("os")}     style={hSelSt}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                <th style={filtTh}><select value={colSortVal("plafon")} onChange={setColSort("plafon")} style={hSelSt}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                <th style={filtTh}><select value={colSortVal("pct")}    onChange={setColSort("pct")}    style={hSelSt}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                <th style={filtTh}><select value={osKolF} onChange={onF(setOsKolF)} style={hSelSt}>{osKolOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
+                <th style={filtTh}><select value={restrukFilter} onChange={onF(setRestrukFilter)} style={hSelSt}><option value="semua">Semua</option><option value="Y">Y</option><option value="N">N</option></select></th>
+                <th style={filtTh}><select value={colSortVal("dpd")}    onChange={setColSort("dpd")}    style={hSelSt}>{sortOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></th>
               </tr>
             </thead>
             <tbody>
               {shown.map((g, ri) => {
                 const multi = g.loans.length > 1;
                 const cifExp = expandedCifs.has(g.cif);
+                const plf = sumPlafon(g);
                 const rows = [];
                 rows.push(
                   <tr key={g.cif} onClick={()=>{ multi ? toggleCif(g.cif) : toggleLoan(g.cif+"-0"); }}
-                    style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}>
-                    <td style={{ padding:"9px 12px", color:C.textMd }}>{g.cif}</td>
-                    <td style={{ padding:"9px 12px", fontWeight:500, color:C.text }}>
+                    style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6`, cursor:"pointer" }}
+                    onMouseEnter={e=>{ e.currentTarget.style.filter="brightness(0.97)"; }}
+                    onMouseLeave={e=>{ e.currentTarget.style.filter="none"; }}>
+                    <td style={{ padding:"9px 12px", color:C.textMd, whiteSpace:"nowrap" }}>{g.cif}</td>
+                    <td style={{ padding:"9px 12px", fontWeight:500, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                      <span style={{ marginRight:6, color:C.gray, fontSize:10 }}>{multi ? (cifExp?"▾":"▸") : ""}</span>
                       {g.nama}
                       {multi && <span style={{ marginLeft:6, fontSize:10, background:C.navyLt, color:C.navy, borderRadius:4, padding:"1px 5px", fontWeight:600 }}>{g.loans.length} pinjaman</span>}
                     </td>
-                    <td style={{ padding:"9px 12px", color:C.textMd }}>{g.ao}</td>
-                    <td style={{ padding:"9px 12px", color:C.textMd }}>{g.sektor}</td>
-                    <td style={{ padding:"9px 12px", fontWeight:600, color:C.amber }}>{fJt(g.totalOsJt)}</td>
-                    <td style={{ padding:"9px 12px", color:C.textMd }}>{fJt(g.loans.reduce((s,l)=>s+l.plafonJt,0))}</td>
-                    <td style={{ padding:"9px 12px" }}>{pctBadge(g.totalOsJt, g.loans.reduce((s,l)=>s+l.plafonJt,0))}</td>
-                    <td style={{ padding:"9px 12px", color:C.textMd }}>{g.kol}</td>
-                    <td style={{ padding:"9px 12px", color:g.dpd>30?C.red:g.dpd>0?C.amber:C.green, fontWeight:600 }}>{g.dpd}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{g.ao}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{g.sektor}</td>
+                    <td style={{ padding:"9px 12px", fontWeight:600, color:C.amber, textAlign:"right", whiteSpace:"nowrap" }}>{fJt(g.totalOsJt)}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd, textAlign:"right", whiteSpace:"nowrap" }}>{fJt(plf)}</td>
+                    <td style={{ padding:"9px 12px", textAlign:"right" }}>{pctBadge(g.totalOsJt, plf)}</td>
+                    <td style={{ padding:"9px 12px", color:C.textMd, textAlign:"center" }}>{g.kol}</td>
+                    <td style={{ padding:"9px 12px", textAlign:"center" }}>
+                      {g.flagRestruk === 'Y'
+                        ? <span style={{ fontSize:10.5, fontWeight:700, color:C.amber, background:C.amberLt, padding:"2px 7px", borderRadius:4 }}>Y</span>
+                        : <span style={{ fontSize:10.5, color:C.gray }}>N</span>}
+                    </td>
+                    <td style={{ padding:"9px 12px", textAlign:"center", color:g.dpd>30?C.red:g.dpd>0?C.amber:C.green, fontWeight:600 }}>{g.dpd}</td>
                   </tr>
                 );
                 if (multi && cifExp) {
@@ -2186,31 +3250,38 @@ function OsKurang50({ list }) {
                     rows.push(
                       <tr key={lkey} onClick={()=>toggleLoan(lkey)}
                         style={{ background:"#FFF7ED", borderBottom:`1px solid ${C.border}`, cursor:"pointer" }}>
-                        <td style={{ padding:"7px 12px 7px 28px", color:C.navy, fontWeight:500, fontSize:12 }}>
+                        <td style={{ padding:"7px 12px 7px 24px", color:C.navy, fontWeight:500, fontSize:12, whiteSpace:"nowrap" }}>
                           <span style={{ fontSize:10, color:C.gray, marginRight:6 }}>↳</span>Pinjaman {li+1}
                         </td>
-                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.sektor}</td>
-                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{loan.ao}</td>
                         <td style={{ padding:"7px 12px", fontSize:12 }}></td>
-                        <td style={{ padding:"7px 12px", fontWeight:600, color:C.amber, fontSize:12 }}>{fJt(loan.osJt)}</td>
-                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12 }}>{fJt(loan.plafonJt)}</td>
-                        <td style={{ padding:"7px 12px", fontSize:12 }}>{pctBadge(loan.osJt, loan.plafonJt)}</td>
-                        <td style={{ padding:"7px 12px", fontSize:12, color:C.textMd }}>{loan.kol}</td>
-                        <td style={{ padding:"7px 12px", fontSize:12, color:loan.dpd>30?C.red:loan.dpd>0?C.amber:C.green, fontWeight:600 }}>{loan.dpd}</td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{loan.ao}</td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{loan.sektor}</td>
+                        <td style={{ padding:"7px 12px", fontWeight:600, color:C.amber, fontSize:12, textAlign:"right", whiteSpace:"nowrap" }}>{fJt(loan.osJt)}</td>
+                        <td style={{ padding:"7px 12px", color:C.textMd, fontSize:12, textAlign:"right", whiteSpace:"nowrap" }}>{fJt(loan.plafonJt)}</td>
+                        <td style={{ padding:"7px 12px", fontSize:12, textAlign:"right" }}>{pctBadge(loan.osJt, loan.plafonJt)}</td>
+                        <td style={{ padding:"7px 12px", fontSize:12, color:C.textMd, textAlign:"center" }}>{loan.kol}</td>
+                        <td style={{ padding:"7px 12px", textAlign:"center" }}>
+                          {loan.flagRestruk === 'Y'
+                            ? <span style={{ fontSize:10, fontWeight:700, color:C.amber, background:C.amberLt, padding:"2px 6px", borderRadius:4 }}>Y</span>
+                            : <span style={{ fontSize:10, color:C.gray }}>N</span>}
+                        </td>
+                        <td style={{ padding:"7px 12px", fontSize:12, textAlign:"center", color:loan.dpd>30?C.red:loan.dpd>0?C.amber:C.green, fontWeight:600 }}>{loan.dpd}</td>
                       </tr>
                     );
-                    if (lExp) rows.push(<BreakdownRow key={lkey+"-exp"} d={loan} colSpan={9} />);
+                    if (lExp) rows.push(<BreakdownRow key={lkey+"-exp"} d={loan} colSpan={10} />);
                   });
                 }
                 if (!multi && expandedLoan === g.cif+"-0") {
-                  rows.push(<BreakdownRow key={g.cif+"-exp"} d={g.loans[0]} colSpan={9} />);
+                  rows.push(<BreakdownRow key={g.cif+"-exp"} d={g.loans[0]} colSpan={10} />);
                 }
                 return rows;
               })}
+              {unitDebitur.length === 0 && (
+                <tr><td colSpan={10} style={{ padding:24, textAlign:"center", color:C.gray }}>Tidak ada debitur OS &lt; 50% di unit ini</td></tr>
+              )}
             </tbody>
           </table>
         </div>
-        {unitDebitur.length === 0 && <div style={{ padding:24, textAlign:"center", color:C.gray }}>Tidak ada debitur OS &lt; 50% di unit ini</div>}
         {unitDebitur.length > 0 && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 16px", borderTop:`1px solid ${C.border}` }}>
             <span style={{ fontSize:12, color:C.gray }}>Menampilkan {(pg-1)*PER_PAGE+1}–{Math.min(pg*PER_PAGE,unitDebitur.length)} dari {fNum(unitDebitur.length)}</span>
@@ -2226,25 +3297,149 @@ function OsKurang50({ list }) {
   );
 }
 
-function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
+// Kartu upload multi-file: antrean beberapa file, tiap file punya tanggal sendiri.
+// Diproses berurutan (sequential) + jeda kecil antar file agar browser tidak "not responding".
+function MultiUploadCard({ jenis, title, dotColor, description, dateHint, canEdit, locked, lockedByTitle, onUpload, onQueueComplete, onActiveChange }) {
+  const yest = () => { const d = new Date(); d.setDate(d.getDate()-1); return d.toISOString().split('T')[0]; };
+  const [entries,   setEntries]   = useState([]); // { id, file, tgl }
+  const [uploading, setUploading] = useState(false);
+  const [pct,       setPct]       = useState(0);
+  const [pctLabel,  setPctLabel]  = useState('');
+  const [err,       setErr]       = useState(null);
+  const inputRef = useRef(null);
+  const idRef    = useRef(0);
+
+  const disabled = !canEdit || locked;
+  const active   = entries.length > 0 || uploading;
+
+  // Laporkan ke induk apakah kartu ini sedang "aktif" (punya antrean / sedang upload) → untuk mutual-exclusive
+  useEffect(() => { onActiveChange?.(jenis, active); }, [active, jenis]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addFiles = (fileList) => {
+    if (disabled) return;
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (!files.length) return;
+    setErr(null);
+    setEntries(prev => [...prev, ...files.map(f => ({ id: ++idRef.current, file: f, tgl: yest() }))]);
+    if (inputRef.current) inputRef.current.value = ''; // reset agar file yang sama bisa dipilih lagi
+  };
+  const removeEntry = (id)    => setEntries(prev => prev.filter(e => e.id !== id));
+  const setEntryTgl = (id, v) => setEntries(prev => prev.map(e => e.id === id ? { ...e, tgl: v } : e));
+
+  const doUpload = async () => {
+    if (disabled || uploading || !entries.length) return;
+    setUploading(true); setErr(null);
+    const queue = [...entries];
+    const failed = [];
+    for (let i = 0; i < queue.length; i++) {
+      const e = queue[i];
+      setPct(0); setPctLabel(`File ${i+1}/${queue.length}: ${e.file.name}`);
+      try {
+        await onUpload(e.file, e.tgl, (p, l) => { setPct(p); setPctLabel(`File ${i+1}/${queue.length} · ${e.file.name}${l ? ' — ' + l : ''}`); });
+        setEntries(prev => prev.filter(x => x.id !== e.id)); // sukses → keluarkan dari antrean
+      } catch (ex) {
+        failed.push(`${e.file.name}: ${ex.message || 'gagal diproses'}`);
+      }
+      await new Promise(r => setTimeout(r, 50)); // beri napas ke event loop (cegah hang)
+    }
+    setUploading(false); setPct(0); setPctLabel('');
+    if (failed.length) setErr(`${failed.length} file gagal:\n${failed.join('\n')}`);
+    try { await onQueueComplete?.(); } catch { /* abaikan */ }
+  };
+
+  return (
+    <div style={{ ...card, padding:20, opacity: locked ? 0.6 : 1 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+        <div style={{ width:8, height:8, borderRadius:'50%', background:dotColor, flexShrink:0 }} />
+        <div style={{ fontSize:14, fontWeight:600, color:C.navy }}>{title}</div>
+      </div>
+      <div style={{ fontSize:12, color:C.gray, marginBottom:12 }}>{description}</div>
+
+      {locked && (
+        <div style={{ marginBottom:10, padding:'8px 12px', background:C.amberLt, border:`1px solid ${C.amber}`, borderRadius:7, fontSize:12, color:C.amber }}>
+          Selesaikan / kosongkan upload <b>{lockedByTitle || 'yang sedang aktif'}</b> dulu sebelum mengisi yang ini.
+        </div>
+      )}
+
+      {/* Antrean file — tiap file punya tanggal data sendiri */}
+      {entries.map((e, i) => (
+        <div key={e.id} style={{ border:`1px solid ${C.border}`, borderRadius:8, padding:'8px 10px', marginBottom:8, background:C.grayLt }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+            <Ic n="doc" size={15} />
+            <span style={{ fontSize:12.5, color:C.text, fontWeight:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1 }}>{e.file.name}</span>
+            {!uploading && <button onClick={()=>removeEntry(e.id)} title="Hapus dari antrean"
+              style={{ border:'none', background:'none', color:C.gray, cursor:'pointer', fontSize:17, lineHeight:1, padding:'0 4px' }}>×</button>}
+          </div>
+          <label style={{ fontSize:10.5, fontWeight:600, color:C.textMd, display:'block', marginBottom:3 }}>Tanggal Data File{entries.length>1?` #${i+1}`:''}</label>
+          <input type="date" value={e.tgl} onChange={ev=>setEntryTgl(e.id, ev.target.value)} disabled={uploading}
+            style={{ width:'100%', padding:'6px 9px', border:`1.5px solid ${C.border}`, borderRadius:6, fontSize:12.5, color:C.text, background:C.white, boxSizing:'border-box', outline:'none' }} />
+        </div>
+      ))}
+
+      {uploading ? (
+        <div style={{ marginBottom:10 }}>
+          <div style={{ fontSize:12, color:C.textMd, marginBottom:6 }}>{pctLabel || 'Memproses...'}</div>
+          <div style={{ background:C.border, borderRadius:99, height:10, overflow:'hidden', marginBottom:5 }}>
+            <div style={{ height:'100%', borderRadius:99, background:dotColor, width:`${pct}%`, transition:'width 0.25s ease' }} />
+          </div>
+          <div style={{ fontSize:12, fontWeight:700, color:dotColor, textAlign:'right' }}>{pct}%</div>
+        </div>
+      ) : (
+        <div onClick={()=>!disabled && inputRef.current?.click()} onDragOver={e=>e.preventDefault()}
+          onDrop={e=>{ e.preventDefault(); addFiles(e.dataTransfer.files); }}
+          style={{ border:`2px dashed ${err?C.red:C.border}`, borderRadius:8, padding:'14px', textAlign:'center', marginBottom:10,
+            color:C.gray, fontSize:13, display:'flex', flexDirection:'column', alignItems:'center', gap:5,
+            cursor:disabled?'not-allowed':'pointer', background:disabled?C.grayLt:'transparent' }}>
+          <Ic n="upload" size={20} />
+          {entries.length ? '+ Tambah file lagi (klik atau drag)' : 'Klik atau drag file Excel (.xlsx) — bisa pilih beberapa'}
+        </div>
+      )}
+
+      {err && <div style={{ marginBottom:10, padding:'8px 12px', background:C.redLt, border:`1px solid ${C.red}`, borderRadius:7, fontSize:12, color:C.red, whiteSpace:'pre-line' }}>{err}</div>}
+
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+        <button onClick={doUpload} disabled={disabled||uploading||!entries.length}
+          style={{ flex:1, minWidth:140, padding:'9px', background:dotColor, color:C.white, border:'none', borderRadius:7,
+            cursor:(!disabled&&entries.length&&!uploading)?'pointer':'not-allowed', fontSize:13, fontWeight:500,
+            opacity:(!disabled&&entries.length&&!uploading)?1:.45 }}>
+          {uploading ? 'Memproses...' : `Upload & Proses${entries.length?` (${entries.length} file)`:''}`}
+        </button>
+        {!uploading && (
+          <button onClick={()=>!disabled && inputRef.current?.click()} disabled={disabled}
+            style={{ padding:'9px 14px', background:C.white, color:dotColor, border:`1.5px solid ${dotColor}`, borderRadius:7,
+              cursor:disabled?'not-allowed':'pointer', fontSize:13, fontWeight:600, opacity:disabled?.45:1 }}>+ Tambah</button>
+        )}
+        {entries.length>0 && !uploading && (
+          <button onClick={()=>{ setEntries([]); setErr(null); }}
+            style={{ padding:'9px 14px', background:C.white, color:C.gray, border:`1px solid ${C.border}`, borderRadius:7, cursor:'pointer', fontSize:13 }}>Bersihkan</button>
+        )}
+      </div>
+
+      {dateHint && <div style={{ fontSize:11, color:C.gray, marginTop:8 }}>{dateHint}</div>}
+
+      <input ref={inputRef} type="file" accept=".xlsx,.xls" multiple style={{ display:'none' }} onChange={e=>addFiles(e.target.files)} />
+    </div>
+  );
+}
+
+function Pengaturan({ perms, onUpload, onReset, onDataChanged, onUploadCkpn, onUploadRecPh }) {
   const w = useWindowWidth();
-  const [uploading,      setUploading]      = useState(false);
-  const [uploadError,    setUploadError]    = useState(null);
-  const [pendingFile,    setPendingFile]    = useState(null);
-  const [uploadPct,      setUploadPct]      = useState(0);
-  const [uploadPctLabel, setUploadPctLabel] = useState("");
-  const yesterday = () => { const d = new Date(); d.setDate(d.getDate()-1); return d.toISOString().split('T')[0]; };
-  const [fileTanggal, setFileTanggal] = useState(yesterday);
   const [history,     setHistory]     = useState([]);
   const [histLoading, setHistLoading] = useState(false);
   const [deletingId,  setDeletingId]  = useState(null);
-  const fileRef = useRef(null);
+  const [selected,    setSelected]    = useState(() => new Set()); // id upload yang dicentang
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  // Hanya satu jenis yang boleh punya antrean upload pada satu waktu (mutual-exclusive)
+  const [activeJenis, setActiveJenis] = useState(null);
+  const handleActive = (jenis, isActive) => setActiveJenis(prev => isActive ? jenis : (prev === jenis ? null : prev));
+  const UPLOAD_TITLES = { lw321:'LW321 — Data Aktif', ckpn:'CKPN per Unit Kerja', rec_ph:'Recovery PH — Rincian Debitur' };
 
   const loadHistory = async () => {
     setHistLoading(true);
     try {
-      const { data } = await supabase.from('uploads').select('*').order('tgl_file', { ascending: false });
+      const { data } = await fetchUploads({ order: 'desc' });
       setHistory(data || []);
+      setSelected(new Set()); // reset centang setiap kali data dimuat ulang
     } finally { setHistLoading(false); }
   };
 
@@ -2254,36 +3449,33 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
     if (!window.confirm(`Hapus upload "${up.periode_label}" (${Number(up.row_count).toLocaleString("id-ID")} debitur)?\n\nSemua data debitur dari upload ini akan ikut terhapus.`)) return;
     setDeletingId(up.id);
     try {
-      await supabase.from('uploads').delete().eq('id', up.id);
+      await deleteUpload(up.id);
       await loadHistory();
       if (onDataChanged) await onDataChanged();
     } finally { setDeletingId(null); }
   };
-  const cols  = w >= 900  ? "1fr 1fr" : "1fr";
+
+  // Hapus beberapa / semua upload sekaligus (sekuensial agar cascade DB tidak kebanjiran)
+  const deleteMany = async (ups) => {
+    if (!ups.length) return;
+    const totalDeb = ups.reduce((s,u)=>s+(Number(u.row_count)||0),0);
+    if (!window.confirm(`Hapus ${ups.length} upload (${totalDeb.toLocaleString("id-ID")} debitur)?\n\nSemua data debitur dari upload-upload ini akan ikut terhapus. Tindakan ini tidak dapat dibatalkan.`)) return;
+    setBulkDeleting(true);
+    try {
+      for (const up of ups) await deleteUpload(up.id);
+      await loadHistory();
+      if (onDataChanged) await onDataChanged();
+    } finally { setBulkDeleting(false); }
+  };
+  const handleDeleteSelected = () => deleteMany(history.filter(u => selected.has(u.id)));
+  const handleDeleteAll      = () => deleteMany(history);
+
+  const toggleSel = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allSelected = history.length > 0 && selected.size === history.length;
+  const toggleSelAll = () => setSelected(allSelected ? new Set() : new Set(history.map(u=>u.id)));
   const cols3 = w >= 1200 ? "1fr 1fr 1fr" : w >= 900 ? "1fr 1fr" : "1fr";
   const canEdit = perms?.editData;
-
-  const handleFileSelect = (file) => {
-    if (!file || !canEdit) return;
-    setPendingFile(file);
-    setUploadError(null);
-  };
-
-  const handleUpload = async () => {
-    if (!pendingFile || !canEdit) return;
-    setUploading(true); setUploadError(null); setUploadPct(0); setUploadPctLabel("");
-    try {
-      await onUpload(pendingFile, fileTanggal, (pct, label) => {
-        setUploadPct(pct);
-        setUploadPctLabel(label);
-      });
-      setPendingFile(null);
-      setUploadPct(0);
-      await loadHistory();
-    }
-    catch (err) { setUploadError(err.message || 'Gagal membaca file'); }
-    finally { setUploading(false); }
-  };
+  const lockedFor = (jenis) => activeJenis && activeJenis !== jenis;
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
@@ -2292,91 +3484,39 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
           <Ic n="infoCircle" size={16} /> Mode lihat — hanya Admin IT yang dapat mengupload file LW321 & CKPN.
         </div>
       )}
-      <div style={{ display:"grid", gridTemplateColumns:cols, gap:12 }}>
-        <div style={{ ...card, padding:0, overflow:"hidden" }}>
-          <div style={{ padding:"14px 16px 0" }}><CardTitle>Parameter Risk Scoring (BR-04)</CardTitle></div>
-          <Tabel headers={["Parameter","Bobot"]} colW={["70%","30%"]} rows={[["DPD (Days Past Due)","40%"],["Mutasi Rekening","20%"],["Aktivitas Usaha","20%"],["Riwayat Pembayaran","20%"]]} />
-          <div style={{ padding:"12px 16px", display:"flex", gap:8, flexWrap:"wrap" }}>
-            {[["80–100","Low Risk",C.green],["60–79","Medium Risk",C.amber],["<60","High Risk",C.red]].map(([rng2,lbl,c])=>(
-              <div key={lbl} style={{ flex:"1 1 110px", border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 10px", textAlign:"center" }}>
-                <div style={{ fontSize:15, fontWeight:700, color:c }}>{rng2}</div>
-                <div style={{ fontSize:11, color:C.gray }}>{lbl}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div style={{ ...card, padding:0, overflow:"hidden" }}>
-          <div style={{ padding:"14px 16px 0" }}><CardTitle>Daftar Unit Kerja — BO Polewali</CardTitle></div>
-          <div style={{ maxHeight:300, overflowY:"auto", overflowX:"auto" }}>
-            <Tabel stickyHeader headers={["No","Kode Uker","Nama Unit Kerja","Tipe"]} colW={[50,110,"auto",90]}
-              rows={UKER.map((u,i)=>[i+1, <b style={{ color:C.navy }}>{u.kode}</b>, u.nama, u.tipe])} />
-          </div>
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ padding:"14px 16px 0" }}><CardTitle>Daftar Unit Kerja — BO Polewali</CardTitle></div>
+        <div style={{ maxHeight:300, overflowY:"auto", overflowX:"auto" }}>
+          <Tabel stickyHeader headers={["No","Kode Uker","Nama Unit Kerja","Tipe"]} colW={[50,110,"auto",90]}
+            rows={UKER.map((u,i)=>[i+1, <b style={{ color:C.navy }}>{u.kode}</b>, u.nama, u.tipe])} />
         </div>
       </div>
-      <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={e=>handleFileSelect(e.target.files?.[0])} />
       <div style={{ display:"grid", gridTemplateColumns:cols3, gap:12 }}>
 
-        {/* LW321 — Data Aktif */}
-        <div style={{ ...card, padding:20 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-            <div style={{ width:8, height:8, borderRadius:"50%", background:C.green, flexShrink:0 }} />
-            <div style={{ fontSize:14, fontWeight:600, color:C.navy }}>LW321 — Data Aktif</div>
-          </div>
-          <div style={{ fontSize:12, color:C.gray, marginBottom:12 }}>Upload file LW321 harian · Header baris ke-4 · Data tersedia H+1</div>
+        <MultiUploadCard
+          jenis="lw321" title="LW321 — Data Aktif" dotColor={C.green}
+          description="Upload file LW321 harian · Header baris ke-4 · Data tersedia H+1 · bisa beberapa file sekaligus"
+          dateHint="Tiap file punya tanggal sendiri — pilih tanggal data di dalam file (bukan tanggal upload)"
+          canEdit={canEdit} locked={lockedFor('lw321')} lockedByTitle={UPLOAD_TITLES[activeJenis]}
+          onUpload={onUpload} onActiveChange={handleActive}
+          onQueueComplete={async ()=>{ await loadHistory(); if (onDataChanged) await onDataChanged(); }}
+        />
 
-          {/* Date picker */}
-          <div style={{ marginBottom:12 }}>
-            <label style={{ fontSize:11.5, fontWeight:600, color:C.textMd, display:"block", marginBottom:5 }}>Tanggal Data File</label>
-            <input type="date" value={fileTanggal} onChange={e=>setFileTanggal(e.target.value)} disabled={!canEdit}
-              style={{ width:"100%", padding:"8px 10px", border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13,
-                color:C.text, background:canEdit?C.white:C.grayLt, boxSizing:"border-box", outline:"none" }} />
-            <div style={{ fontSize:11, color:C.gray, marginTop:4 }}>Pilih tanggal data di dalam file (bukan tanggal upload)</div>
-          </div>
+        <MultiUploadCard
+          jenis="ckpn" title="CKPN per Unit Kerja" dotColor={C.kpiPurple}
+          description="Upload bulanan bersamaan Recovery PH. File BIAYA_CKPN_UKER.xlsx dari sistem BRI."
+          canEdit={canEdit} locked={lockedFor('ckpn')} lockedByTitle={UPLOAD_TITLES[activeJenis]}
+          onUpload={onUploadCkpn} onActiveChange={handleActive}
+          onQueueComplete={async ()=>{ await loadHistory(); }}
+        />
 
-          {uploading ? (
-            <div style={{ marginBottom:10 }}>
-              <div style={{ fontSize:12, color:C.textMd, marginBottom:6 }}>{uploadPctLabel || "Memproses..."}</div>
-              <div style={{ background:C.border, borderRadius:99, height:10, overflow:"hidden", marginBottom:5 }}>
-                <div style={{ height:"100%", borderRadius:99, background:C.navy, width:`${uploadPct}%`, transition:"width 0.25s ease" }} />
-              </div>
-              <div style={{ fontSize:12, fontWeight:700, color:C.navy, textAlign:"right" }}>{uploadPct}%</div>
-            </div>
-          ) : (
-            <div onClick={()=>canEdit && fileRef.current?.click()} onDragOver={e=>e.preventDefault()}
-              onDrop={e=>{ e.preventDefault(); handleFileSelect(e.dataTransfer.files?.[0]); }}
-              style={{ border:`2px dashed ${pendingFile?C.navy:uploadError?C.red:C.border}`, borderRadius:8, padding:"16px", textAlign:"center",
-                marginBottom:10, color:pendingFile?C.navy:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center",
-                gap:5, cursor:canEdit?"pointer":"default", background:pendingFile?C.navyLt:canEdit?"transparent":C.grayLt }}>
-              <Ic n={pendingFile?"doc":"upload"} size={20} />
-              {pendingFile ? pendingFile.name : uploadedData ? "Drag atau klik untuk pilih file baru" : "Klik atau drag file LW321 (.xlsx)"}
-            </div>
-          )}
-          {uploadError && <div style={{ marginBottom:10, padding:"8px 12px", background:C.redLt, border:`1px solid ${C.red}`, borderRadius:7, fontSize:12, color:C.red }}>{uploadError}</div>}
-          <div style={{ display:"flex", gap:8 }}>
-            <button onClick={handleUpload} disabled={!canEdit||uploading||!pendingFile}
-              style={{ flex:1, padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7,
-                cursor:(canEdit&&pendingFile&&!uploading)?"pointer":"not-allowed", fontSize:13, fontWeight:500,
-                opacity:(canEdit&&pendingFile&&!uploading)?1:.45 }}>
-              {uploading ? "Memproses..." : "Upload & Proses"}
-            </button>
-            {pendingFile && <button onClick={()=>{ setPendingFile(null); setUploadError(null); }} style={{ padding:"9px 14px", background:C.white, color:C.gray, border:`1px solid ${C.border}`, borderRadius:7, cursor:"pointer", fontSize:13 }}>Batal</button>}
-          </div>
-        </div>
-
-        {/* CKPN — masih mock */}
-        <div style={{ ...card, padding:20 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-            <div style={{ width:8, height:8, borderRadius:"50%", background:C.kpiPurple, flexShrink:0 }} />
-            <div style={{ fontSize:14, fontWeight:600, color:C.navy }}>Import CKPN per Unit Kerja</div>
-          </div>
-          <div style={{ fontSize:12, color:C.gray, marginBottom:14 }}>Upload bulanan per akhir bulan. Format Excel (.xlsx) / CSV. Kolom: KODE_UKER, PERIODE, CKPN_EXISTING, CKPN_POTENSIAL, COVERAGE_RATIO.</div>
-          <div style={{ border:`2px dashed ${C.border}`, borderRadius:8, padding:"22px", textAlign:"center", marginBottom:12,
-            color:C.gray, fontSize:13, display:"flex", flexDirection:"column", alignItems:"center", gap:6, background:C.grayLt }}>
-            <Ic n="upload" size={22} /> Klik atau drag file Excel/CSV ke sini
-          </div>
-          <button disabled style={{ width:"100%", padding:"9px", background:C.navy, color:C.white, border:"none", borderRadius:7,
-            cursor:"not-allowed", fontSize:13, fontWeight:500, opacity:.45 }}>Segera Hadir</button>
-        </div>
+        <MultiUploadCard
+          jenis="rec_ph" title="Recovery PH — Rincian Debitur" dotColor={C.kpiTeal}
+          description="Upload bulanan awal bulan. File Rincian Debitur Recovery Ekstra dan Realisasi PH.xlsx."
+          canEdit={canEdit} locked={lockedFor('rec_ph')} lockedByTitle={UPLOAD_TITLES[activeJenis]}
+          onUpload={onUploadRecPh} onActiveChange={handleActive}
+          onQueueComplete={async ()=>{ await loadHistory(); }}
+        />
 
       </div>
 
@@ -2385,9 +3525,23 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
         <div style={{ ...card, padding:0, overflow:"hidden" }}>
           <div style={{ padding:"14px 16px", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${C.border}` }}>
             <div style={{ fontSize:13, fontWeight:700, color:C.navy, textTransform:"uppercase", letterSpacing:.3 }}>Riwayat Upload Database</div>
-            <button onClick={loadHistory} style={{ fontSize:12, color:C.gray, background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"4px 10px", cursor:"pointer" }}>
-              {histLoading ? "Memuat..." : "Refresh"}
-            </button>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              {selected.size > 0 && (
+                <button onClick={handleDeleteSelected} disabled={bulkDeleting}
+                  style={{ fontSize:12, color:C.white, background:C.red, border:`1px solid ${C.red}`, borderRadius:6, padding:"5px 12px", cursor:"pointer", fontWeight:600, opacity:bulkDeleting?.6:1 }}>
+                  {bulkDeleting ? "Menghapus..." : `Hapus Terpilih (${selected.size})`}
+                </button>
+              )}
+              {history.length > 0 && (
+                <button onClick={handleDeleteAll} disabled={bulkDeleting}
+                  style={{ fontSize:12, color:C.red, background:C.redLt, border:`1px solid ${C.red}`, borderRadius:6, padding:"5px 12px", cursor:"pointer", fontWeight:500, opacity:bulkDeleting?.6:1 }}>
+                  Hapus Semua
+                </button>
+              )}
+              <button onClick={loadHistory} disabled={bulkDeleting} style={{ fontSize:12, color:C.gray, background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"5px 10px", cursor:"pointer", opacity:bulkDeleting?.6:1 }}>
+                {histLoading ? "Memuat..." : "Refresh"}
+              </button>
+            </div>
           </div>
           {histLoading && !history.length ? (
             <div style={{ padding:"24px", textAlign:"center", color:C.gray, fontSize:13 }}>Memuat riwayat...</div>
@@ -2398,6 +3552,11 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
                 <thead>
                   <tr style={{ background:C.grayLt }}>
+                    <th style={{ padding:"9px 0 9px 14px", width:34, borderBottom:`1px solid ${C.border}` }}>
+                      <input type="checkbox" checked={allSelected} onChange={toggleSelAll} disabled={bulkDeleting}
+                        ref={el => { if (el) el.indeterminate = selected.size > 0 && !allSelected; }}
+                        title="Pilih semua" style={{ cursor:"pointer" }} />
+                    </th>
                     {["Jenis","Tanggal Data","Periode","Jumlah Debitur","Diupload Oleh","Waktu Upload",""].map((h,i)=>(
                       <th key={i} style={{ padding:"9px 14px", color:C.gray, fontWeight:600, fontSize:11, textTransform:"uppercase",
                         textAlign:i===5||i===3?"right":"left", whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}` }}>{h}</th>
@@ -2412,13 +3571,17 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
                     });
                     return history.map((up, i) => {
                       const isActive = latestTgl[up.jenis] === up.tgl_file;
+                      const isSel = selected.has(up.id);
                       return (
-                        <tr key={up.id} style={{ background: i%2===0?C.white:C.grayLt, borderBottom:`1px solid ${C.border}` }}>
+                        <tr key={up.id} style={{ background: isSel ? C.navyLt : (i%2===0?C.white:C.grayLt), borderBottom:`1px solid ${C.border}` }}>
+                          <td style={{ padding:"10px 0 10px 14px" }}>
+                            <input type="checkbox" checked={isSel} onChange={()=>toggleSel(up.id)} disabled={bulkDeleting} style={{ cursor:"pointer" }} />
+                          </td>
                           <td style={{ padding:"10px 14px", fontWeight:600, color:C.navy, textTransform:"uppercase", fontSize:12 }}>
                             {up.jenis}
                             {isActive && <span style={{ marginLeft:6, fontSize:10, background:C.greenLt, color:C.green, border:`1px solid ${C.green}`, borderRadius:4, padding:"1px 5px" }}>Aktif</span>}
                           </td>
-                          <td style={{ padding:"10px 14px", color:C.text }}>{up.tgl_file}</td>
+                          <td style={{ padding:"10px 14px", color:C.text }}>{up.tgl_file ? up.tgl_file.slice(0,10).split('-').reverse().join('/') : '-'}</td>
                           <td style={{ padding:"10px 14px", color:C.text }}>{up.periode_label}</td>
                           <td style={{ padding:"10px 14px", color:C.text, textAlign:"right" }}>{Number(up.row_count).toLocaleString("id-ID")}</td>
                           <td style={{ padding:"10px 14px", color:C.gray, fontFamily:"monospace", fontSize:12 }}>{up.uploaded_by || "-"}</td>
@@ -2426,9 +3589,9 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
                             {new Date(up.created_at).toLocaleString("id-ID",{ dateStyle:"short", timeStyle:"short" })}
                           </td>
                           <td style={{ padding:"10px 14px", textAlign:"center" }}>
-                            <button onClick={()=>handleDelete(up)} disabled={deletingId===up.id}
+                            <button onClick={()=>handleDelete(up)} disabled={deletingId===up.id || bulkDeleting}
                               style={{ padding:"5px 12px", background:C.redLt, color:C.red, border:`1px solid ${C.red}`,
-                                borderRadius:6, fontSize:12, cursor:"pointer", fontWeight:500, opacity:deletingId===up.id?.5:1 }}>
+                                borderRadius:6, fontSize:12, cursor:"pointer", fontWeight:500, opacity:(deletingId===up.id||bulkDeleting)?.5:1 }}>
                               {deletingId===up.id ? "Menghapus..." : "Hapus"}
                             </button>
                           </td>
@@ -2446,32 +3609,57 @@ function Pengaturan({ perms, onUpload, uploadedData, onReset, onDataChanged }) {
   );
 }
 
-function ManajemenUser({ localUsers, setLocalUsers }) {
+function ManajemenUser({ localUsers, setLocalUsers, currentUser }) {
   const [formOpen, setFormOpen]  = useState(false);
   const [editId,   setEditId]    = useState(null);
   const emptyForm = { nama:"", pn:"", username:"", password:"", role:"mb", uker:"", aoId:"", aktif:true };
   const [form, setForm] = useState(emptyForm);
   const [err,  setErr]  = useState("");
 
-  const ROLE_OPT = [
-    { value:"mb",         label:"Manajer Bisnis" },
-    { value:"kepalaUnit", label:"Kepala Unit" },
-    { value:"admin",      label:"Admin IT" },
-  ];
-  const ROLE_COLOR = { pinca:C.kpiBlue, mb:C.kpiPurple, kepalaUnit:C.kpiTeal, admin:C.gray };
-  const ROLE_LABEL = { pinca:"Pimpinan Cabang", mb:"Manajer Bisnis", kepalaUnit:"Kepala Unit", admin:"Admin IT" };
+  const isSuperAdmin = currentUser?.role === "superadmin";
+
+  // Superadmin bisa kelola semua role. Admin IT hanya bisa kelola di bawahnya.
+  const ROLE_OPT = isSuperAdmin
+    ? [
+        { value:"mb",         label:"Manajer Bisnis" },
+        { value:"kepalaUnit", label:"Kepala Unit" },
+        { value:"pinca",      label:"Pimpinan Cabang" },
+        { value:"admin",      label:"Admin IT" },
+      ]
+    : [
+        { value:"mb",         label:"Manajer Bisnis" },
+        { value:"kepalaUnit", label:"Kepala Unit" },
+        { value:"pinca",      label:"Pimpinan Cabang" },
+      ];
+
+  const ROLE_COLOR = { pinca:C.kpiBlue, mb:C.kpiPurple, kepalaUnit:C.kpiTeal, admin:C.gray, superadmin:"#92400E" };
+  const ROLE_LABEL = { pinca:"Pimpinan Cabang", mb:"Manajer Bisnis", kepalaUnit:"Kepala Unit", admin:"Admin IT", superadmin:"Super Admin IT" };
+
+  // Cek apakah akun ini dilindungi (tidak bisa disentuh oleh role saat ini)
+  const isProtected = (u) => {
+    if (u.role === "superadmin") return true;            // superadmin tidak bisa disentuh siapapun
+    if (!isSuperAdmin && u.role === "admin") return true; // admin IT tidak bisa sentuh admin IT lain
+    return false;
+  };
 
   const autoUser = (nama) => {
     const p = nama.trim().toLowerCase().split(/\s+/);
     return p.length >= 2 ? `${p[0]}.${p[p.length-1]}` : p[0] || "";
   };
 
-  const needUker  = !["mb","admin","pinca"].includes(form.role);
+  const needUker  = !["mb","admin","superadmin","pinca"].includes(form.role);
 
   const openNew  = () => { setEditId(null); setForm(emptyForm); setErr(""); setFormOpen(true); };
-  const openEdit = (u) => { setEditId(u.id); setForm({ nama:u.nama, pn:u.pn||"", username:u.username, password:u.password, role:u.role, uker:u.uker||"", aoId:u.aoId||"", aktif:u.aktif }); setErr(""); setFormOpen(true); };
+  const openEdit = (u) => {
+    if (isProtected(u)) return;
+    setEditId(u.id); setForm({ nama:u.nama, pn:u.pn||"", username:u.username, password:u.password, role:u.role, uker:u.uker||"", aoId:u.aoId||"", aktif:u.aktif }); setErr(""); setFormOpen(true);
+  };
   const cancel   = () => { setFormOpen(false); setEditId(null); setErr(""); };
-  const toggle   = (id) => setLocalUsers(prev => prev.map(u => u.id===id ? { ...u, aktif:!u.aktif } : u));
+  const toggle   = (id) => {
+    const u = localUsers.find(x => x.id === id);
+    if (!u || isProtected(u)) return;
+    setLocalUsers(prev => prev.map(x => x.id===id ? { ...x, aktif:!x.aktif } : x));
+  };
 
   const save = () => {
     if (!form.nama.trim() || !form.username.trim() || !form.password.trim()) { setErr("Nama, username, dan password wajib diisi."); return; }
@@ -2607,16 +3795,24 @@ function ManajemenUser({ localUsers, setLocalUsers }) {
                       : <span style={{ fontSize:12, fontWeight:600, color:C.gray  }}>○ Nonaktif</span>}
                   </td>
                   <td style={{ padding:"10px 14px" }}>
-                    <div style={{ display:"flex", gap:6, whiteSpace:"nowrap" }}>
-                      <button onClick={()=>openEdit(u)}
-                        style={{ padding:"5px 12px", fontSize:12, fontWeight:600, background:C.navyLt, color:C.navy, border:"none", borderRadius:6, cursor:"pointer" }}>
-                        Edit
-                      </button>
-                      <button onClick={()=>toggle(u.id)}
-                        style={{ padding:"5px 12px", fontSize:12, fontWeight:600, background:u.aktif?C.redLt:C.greenLt, color:u.aktif?C.red:C.green, border:"none", borderRadius:6, cursor:"pointer" }}>
-                        {u.aktif?"Nonaktifkan":"Aktifkan"}
-                      </button>
-                    </div>
+                    {isProtected(u) ? (
+                      <span style={{ fontSize:11, color: u.role==="superadmin"?"#92400E":C.gray, fontWeight:600,
+                        background: u.role==="superadmin"?"#FEF3C7":"#F3F4F6",
+                        padding:"4px 10px", borderRadius:20, whiteSpace:"nowrap" }}>
+                        {u.role==="superadmin" ? "⭐ Dilindungi" : "🔒 Hanya Super Admin"}
+                      </span>
+                    ) : (
+                      <div style={{ display:"flex", gap:6, whiteSpace:"nowrap" }}>
+                        <button onClick={()=>openEdit(u)}
+                          style={{ padding:"5px 12px", fontSize:12, fontWeight:600, background:C.navyLt, color:C.navy, border:"none", borderRadius:6, cursor:"pointer" }}>
+                          Edit
+                        </button>
+                        <button onClick={()=>toggle(u.id)}
+                          style={{ padding:"5px 12px", fontSize:12, fontWeight:600, background:u.aktif?C.redLt:C.greenLt, color:u.aktif?C.red:C.green, border:"none", borderRadius:6, cursor:"pointer" }}>
+                          {u.aktif?"Nonaktifkan":"Aktifkan"}
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               );
@@ -2626,6 +3822,605 @@ function ManajemenUser({ localUsers, setLocalUsers }) {
       </div>
     </div>
   );
+}
+
+// ── Export helper: tangkap elemen DOM jadi PDF (multi-halaman A4) ──────────────
+async function exportDomToPDF(el, filename, orientation = "portrait") {
+  if (!el) return;
+  const canvas = await html2canvas(el, {
+    scale: 2,
+    backgroundColor: "#F1F5F9",
+    useCORS: true,
+    logging: false,
+    // Penting: JANGAN ubah lebar window di clone — biarkan sama dgn layar agar SVG Recharts
+    // tetap pas di dalam kartunya (kalau diubah, chart meluber & label terpotong).
+    width: el.scrollWidth,
+    height: el.scrollHeight,
+    onclone: (clonedDoc) => {
+      // Klip chart agar tidak keluar dari kotaknya saat di-capture
+      const st = clonedDoc.createElement("style");
+      st.textContent = ".recharts-responsive-container,.recharts-wrapper,.recharts-surface{overflow:hidden!important}";
+      clonedDoc.head.appendChild(st);
+    },
+  });
+  const img = canvas.toDataURL("image/png");
+  const pdf = new jsPDF({ orientation, unit: "pt", format: "a4" });
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const imgH = canvas.height * (pageW / canvas.width);
+  let heightLeft = imgH, position = 0;
+  pdf.addImage(img, "PNG", 0, position, pageW, imgH);
+  heightLeft -= pageH;
+  while (heightLeft > 0) {
+    position -= pageH;
+    pdf.addPage();
+    pdf.addImage(img, "PNG", 0, position, pageW, imgH);
+    heightLeft -= pageH;
+  }
+  pdf.save(filename);
+}
+
+// ── Halaman "Buat Laporan": pilih kolom + filter + urutan + jumlah baris → tabel yang bisa diunduh ──
+// Nama unit cukup 2 kata (buang akhiran "Polewali"): "Unit Luyo Polewali" → "Unit Luyo".
+const shortUker = (s) => String(s||"").trim().split(/\s+/).slice(0,2).join(" ");
+const REPORT_COLS = [
+  { key:"cif",       label:"CIF",              get:g=>g.cif },
+  { key:"nama",      label:"Nama Debitur",     get:g=>g.nama },
+  { key:"ukerNama",  label:"Unit Kerja",       get:g=>shortUker(g.ukerNama) },
+  { key:"ao",        label:"RM/Mantri",        get:g=>g.ao },
+  { key:"pn",        label:"PN",               get:g=>g.pn||"" },
+  { key:"segment",   label:"Segment",          get:g=>g.segment },
+  { key:"sektor",    label:"Sektor",           get:g=>g.sektor },
+  { key:"osJt",      label:"Outstanding (Jt)", get:g=>Math.round(g.totalOsJt), num:true },
+  { key:"kol",       label:"Kol",              get:g=>g.kol },
+  { key:"restruk",   label:"Restruk",          get:g=>g.flagRestruk },
+  { key:"dpd",       label:"DPD",              get:g=>g.dpd, num:true },
+  { key:"tier",      label:"Status Risiko",    get:g=>risikoLabel[g.tier]||g.tier },
+  { key:"tunggakan", label:"Tunggakan (Jt)",   get:g=>Math.round(g.tunggakan||0), num:true },
+];
+const REPORT_DEFAULT = ["cif","nama","ukerNama","ao","osJt","kol","dpd","tier"];
+
+function BuatLaporan({ list }) {
+  const w = useWindowWidth();
+  const ukerOpts   = UKER.filter(u=>list.some(d=>d.uker===u.kode));
+  const sektorOpts = [...new Set(list.map(d=>d.sektor).filter(Boolean))].sort();
+  const [cols, setCols]       = useState(REPORT_DEFAULT);
+  const [uker, setUker]       = useState("semua");
+  const [kol, setKol]         = useState("Semua");
+  const [risiko, setRisiko]   = useState("Semua");
+  const [sektor, setSektor]   = useState("Semua");
+  const [restruk, setRestruk] = useState("Semua");
+  const [sortBy, setSortBy]   = useState("os");
+  const [limit, setLimit]     = useState("25");
+  const [gen, setGen]         = useState(null);
+
+  const toggleCol = (k) => setCols(prev => prev.includes(k) ? prev.filter(x=>x!==k) : [...prev, k]);
+
+  const build = () => {
+    let groups = groupByCif(list).map(g => ({ ...g, tunggakan: g.loans.reduce((s,l)=>s+(l.tunggakanTotal||0),0) }));
+    groups = groups.filter(g =>
+      (kol==="Semua"     || ("Kol "+g.kol)===kol) &&
+      (risiko==="Semua"  || (risikoLabel[g.tier]||g.tier)===risiko) &&
+      (sektor==="Semua"  || g.loans.some(d=>d.sektor===sektor)) &&
+      (restruk==="Semua" || (restruk==="Y" ? g.flagRestruk==="Y" : g.flagRestruk!=="Y"))
+    );
+    const sortFn = sortBy==="os" ? (a,b)=>b.totalOsJt-a.totalOsJt : sortBy==="dpd" ? (a,b)=>b.dpd-a.dpd : null;
+    const lim = limit==="all" ? Infinity : (parseInt(limit)||25);
+    const selCols = REPORT_COLS.filter(c=>cols.includes(c.key));
+    // Kelompokkan per Unit Kerja mengikuti urutan daftar UKER; top N PER unit.
+    const unitList = uker==="semua" ? UKER : UKER.filter(u=>u.kode===uker);
+    const blocks = [];
+    unitList.forEach(u => {
+      let rows = groups.filter(g => g.uker === u.kode);
+      if (!rows.length) return;
+      if (sortFn) rows = [...rows].sort(sortFn);
+      rows = rows.slice(0, lim);
+      if (rows.length) blocks.push({ uker: shortUker(rows[0].ukerNama || u.nama), rows, osJt: rows.reduce((s,g)=>s+g.totalOsJt,0) });
+    });
+    setGen({ selCols, blocks, total: blocks.reduce((s,b)=>s+b.rows.length,0) });
+  };
+
+  const stamp = () => new Date().toISOString().slice(0,10);
+  // Warna kotak untuk sel kategori: [bgHex, textHex]
+  const cellColor = (key, v) => {
+    const s = String(v);
+    if (key === "tier")
+      return { "Risiko Tinggi":["FEE2E2","B91C1C"], "Risiko Sedang":["FEF3C7","B45309"], "Risiko Rendah":["DCFCE7","15803D"] }[s] || null;
+    if (key === "kol")
+      return ["3","4","5"].includes(s) ? ["FEE2E2","B91C1C"] : ["2A","2B"].includes(s) ? ["FEF3C7","B45309"] : ["DCFCE7","15803D"];
+    if (key === "restruk" && s === "Y") return ["FEF3C7","B45309"];
+    return null;
+  };
+  const alignOf = (c) => c.num ? "right" : ["kol","restruk","tier"].includes(c.key) ? "center" : "left";
+
+  const dlExcel = () => {
+    if (!gen) return;
+    const nC = gen.selCols.length;
+    const thin = (rgb)=>({ style:"thin", color:{ rgb } });
+    const border = { top:thin("E5E7EB"), bottom:thin("E5E7EB"), left:thin("E5E7EB"), right:thin("E5E7EB") };
+    // Susun baris: header kolom, lalu per unit → baris judul unit (merge) + data (top N per unit)
+    const aoa = [ gen.selCols.map(c=>c.label) ];
+    const meta = [ { type:"header" } ];
+    gen.blocks.forEach(b => {
+      aoa.push([`${b.uker} — ${b.rows.length} nasabah`, ...Array(nC-1).fill("")]);
+      meta.push({ type:"unit" });
+      b.rows.forEach(g => { aoa.push(gen.selCols.map(c=>c.get(g))); meta.push({ type:"data", g }); });
+    });
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = gen.selCols.map(c=>({ wch: c.num?14 : c.key==="nama"?28 : (c.key==="ukerNama"||c.key==="ao")?20 : 16 }));
+    ws["!rows"] = [{ hpt: 22 }];
+    ws["!merges"] = [];
+    let stripe = 0;
+    meta.forEach((mr, r) => {
+      if (mr.type === "header") {
+        for (let c=0;c<nC;c++){ const a=XLSX.utils.encode_cell({r,c}); if(ws[a]) ws[a].s = { fill:{patternType:"solid",fgColor:{rgb:"0F2A50"}}, font:{color:{rgb:"FFFFFF"},bold:true,sz:10}, alignment:{horizontal:"center",vertical:"center",wrapText:true}, border }; }
+      } else if (mr.type === "unit") {
+        ws["!merges"].push({ s:{r,c:0}, e:{r,c:nC-1} });
+        for (let c=0;c<nC;c++){ const a=XLSX.utils.encode_cell({r,c}); if(ws[a]) ws[a].s = { fill:{patternType:"solid",fgColor:{rgb:"DDE7F3"}}, font:{color:{rgb:"0F2A50"},bold:true,sz:10.5}, alignment:{horizontal:"left",vertical:"center"}, border }; }
+        stripe = 0;
+      } else {
+        const bg = stripe++%2===0 ? "FFFFFF" : "F4F7FB";
+        for (let c=0;c<nC;c++){
+          const col = gen.selCols[c]; const a=XLSX.utils.encode_cell({r,c}); if(!ws[a]) continue;
+          const cc = cellColor(col.key, ws[a].v);
+          ws[a].s = { fill:{patternType:"solid",fgColor:{rgb: cc?cc[0]:bg}}, font:{sz:10,color:{rgb:cc?cc[1]:"344054"},bold:!!cc}, alignment:{horizontal:alignOf(col),vertical:"center"}, border };
+          if (col.num) ws[a].z = "#,##0";
+        }
+      }
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Laporan Debitur");
+    XLSX.writeFile(wb, `Laporan_Debitur_${stamp()}.xlsx`);
+  };
+
+  const dlPDF = () => {
+    if (!gen) return;
+    const landscape = gen.selCols.length > 7;
+    const doc = new jsPDF({ orientation: landscape?"landscape":"portrait", unit:"pt", format:"a4" });
+    doc.setFontSize(13); doc.setTextColor(15,42,80); doc.text("Laporan Daftar Debitur — BO Polewali", 40, 40);
+    doc.setFontSize(9);  doc.setTextColor(120,120,120); doc.text(`Dibuat: ${new Date().toLocaleString("id-ID")} · ${gen.total} nasabah`, 40, 56);
+    const hexRGB = (h)=>[parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+    const nC = gen.selCols.length;
+    const body = [];
+    gen.blocks.forEach(b => {
+      body.push([{ content:`${b.uker} — ${b.rows.length} nasabah`, colSpan:nC, styles:{ fillColor:[221,231,243], textColor:[15,42,80], fontStyle:"bold", halign:"left" } }]);
+      b.rows.forEach(g => body.push(gen.selCols.map(c=> c.num ? Number(c.get(g)).toLocaleString("id-ID") : String(c.get(g)))));
+    });
+    const columnStyles = {};
+    gen.selCols.forEach((c,i)=>{ columnStyles[i] = { halign: alignOf(c) }; });
+    autoTable(doc, {
+      startY: 68,
+      head: [gen.selCols.map(c=>c.label)],
+      body,
+      styles:{ fontSize:8, cellPadding:3, overflow:"linebreak", valign:"middle", lineColor:[229,231,235], lineWidth:0.5 },
+      headStyles:{ fillColor:[15,42,80], textColor:255, fontStyle:"bold", halign:"center" },
+      columnStyles,
+      margin:{ left:40, right:40 },
+      didParseCell: (d) => {
+        if (d.section !== "body" || d.cell.colSpan > 1) return; // lewati baris judul unit
+        const col = gen.selCols[d.column.index];
+        if (!col) return;
+        const cc = cellColor(col.key, d.cell.raw);
+        if (cc) { d.cell.styles.fillColor = hexRGB(cc[0]); d.cell.styles.textColor = hexRGB(cc[1]); d.cell.styles.fontStyle = "bold"; }
+      },
+    });
+    doc.save(`Laporan_Debitur_${stamp()}.pdf`);
+  };
+
+  const fld = (label, node) => (
+    <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+      <label style={{ fontSize:11, fontWeight:600, color:C.textMd }}>{label}</label>
+      {node}
+    </div>
+  );
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      <div style={card}>
+        <CardTitle>1 · Pilih Kolom yang Ditampilkan</CardTitle>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+          {REPORT_COLS.map(c=>{
+            const on = cols.includes(c.key);
+            return (
+              <button key={c.key} onClick={()=>toggleCol(c.key)}
+                style={{ padding:"6px 12px", borderRadius:20, fontSize:12.5, fontWeight:600, cursor:"pointer",
+                  border:`1.5px solid ${on?C.navy:C.border}`, background:on?C.navyLt:C.white, color:on?C.navy:C.gray }}>
+                {on?"✓ ":""}{c.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={card}>
+        <CardTitle>2 · Filter &amp; Urutan</CardTitle>
+        <div style={{ display:"grid", gridTemplateColumns: w>=1000?"repeat(4,1fr)":w>=600?"repeat(2,1fr)":"1fr", gap:12 }}>
+          {fld("Unit Kerja", <Select value={uker} onChange={e=>setUker(e.target.value)} options={[{value:"semua",label:"Semua Unit Kerja"}, ...ukerOpts.map(u=>({value:u.kode,label:u.nama}))]} />)}
+          {fld("Kolektibilitas", <Select value={kol} onChange={e=>setKol(e.target.value)} options={["Semua","Kol 1","Kol 2A","Kol 2B","Kol 3","Kol 4","Kol 5"]} />)}
+          {fld("Status Risiko", <Select value={risiko} onChange={e=>setRisiko(e.target.value)} options={["Semua","Risiko Tinggi","Risiko Sedang","Risiko Rendah"]} />)}
+          {fld("Sektor", <Select value={sektor} onChange={e=>setSektor(e.target.value)} options={["Semua", ...sektorOpts]} />)}
+          {fld("Restruk", <Select value={restruk} onChange={e=>setRestruk(e.target.value)} options={["Semua","Y","N"]} />)}
+          {fld("Urutkan", <Select value={sortBy} onChange={e=>setSortBy(e.target.value)} options={[{value:"os",label:"Outstanding tertinggi"},{value:"dpd",label:"DPD tertinggi"},{value:"default",label:"Urutan default"}]} />)}
+          {fld("Jumlah baris / unit", <Select value={limit} onChange={e=>setLimit(e.target.value)} options={[{value:"5",label:"5 / unit"},{value:"10",label:"10 / unit"},{value:"25",label:"25 / unit"},{value:"50",label:"50 / unit"},{value:"100",label:"100 / unit"},{value:"all",label:"Semua"}]} />)}
+          <div style={{ display:"flex", alignItems:"flex-end" }}>
+            <button onClick={build} disabled={cols.length===0}
+              style={{ width:"100%", padding:"9px", background:cols.length?C.navy:C.border, color:"#fff", border:"none", borderRadius:7, fontSize:13.5, fontWeight:600, cursor:cols.length?"pointer":"not-allowed" }}>
+              Buat Tabel
+            </button>
+          </div>
+        </div>
+        {cols.length===0 && <div style={{ fontSize:12, color:C.red, marginTop:8 }}>Pilih minimal satu kolom dulu.</div>}
+      </div>
+
+      {gen && (
+        <div style={{ ...card, padding:0, overflow:"hidden" }}>
+          <div style={{ padding:"12px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>Hasil — {fNum(gen.total)} nasabah · {gen.blocks.length} unit kerja</div>
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={dlExcel} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", background:C.kpiGreen, color:"#fff", border:"none", borderRadius:7, fontSize:12.5, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={15} /> Unduh Excel</button>
+              <button onClick={dlPDF}   style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", background:C.kpiRed, color:"#fff", border:"none", borderRadius:7, fontSize:12.5, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={15} /> Unduh PDF</button>
+            </div>
+          </div>
+          <div style={{ overflowX:"auto", maxHeight:520, overflowY:"auto" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
+              <thead style={{ position:"sticky", top:0, zIndex:1 }}>
+                <tr>
+                  {gen.selCols.map(c=>(
+                    <th key={c.key} style={{ padding:"9px 12px", color:C.gray, fontWeight:600, fontSize:10.5, textTransform:"uppercase", textAlign:c.num?"right":"left", whiteSpace:"nowrap", borderBottom:`1px solid ${C.border}`, background:C.grayLt }}>{c.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {gen.blocks.map((b)=>[
+                  <tr key={"u-"+b.uker}>
+                    <td colSpan={gen.selCols.length} style={{ padding:"7px 12px", background:"#DDE7F3", color:C.navy, fontWeight:700, fontSize:12, borderBottom:`1px solid ${C.border}` }}>
+                      {b.uker} — {fNum(b.rows.length)} nasabah
+                    </td>
+                  </tr>,
+                  ...b.rows.map((g,ri)=>(
+                    <tr key={b.uker+g.cif+ri} style={{ background:ri%2===0?C.white:C.grayLt, borderBottom:`1px solid #F1F3F6` }}>
+                      {gen.selCols.map(c=>(
+                        <td key={c.key} style={{ padding:"8px 12px", color:C.textMd, textAlign:c.num?"right":"left", whiteSpace:"nowrap" }}>
+                          {c.num ? Number(c.get(g)).toLocaleString("id-ID") : c.get(g)}
+                        </td>
+                      ))}
+                    </tr>
+                  )),
+                ])}
+              </tbody>
+            </table>
+          </div>
+          {gen.total===0 && <div style={{ padding:24, textAlign:"center", color:C.gray, fontSize:14 }}>Tidak ada data sesuai filter.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===================== DATA MANTRI — laporan bergaya KAKA MANTRI (data dummy) =====================
+const M_NAVY = "1B2A6E", M_ORANGE = "E8821E", M_BEIGE = "FBF0CE", M_STRIPE = "F2F2F2", M_BBORD = "E5D9B6";
+const fR = (n) => Number(n||0).toLocaleString("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 });
+const hexRGB = (h)=>[parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+
+// Gambar bar chart horizontal sederhana langsung di jsPDF (vektor, tidak butuh html2canvas)
+// rows: [{ label, value }]; valFmt: (value)=>string; colorHex: "RRGGBB"
+function drawBarsPDF(doc, { x, y, w, h, title, rows, valFmt, colorHex }) {
+  const navy = hexRGB(M_NAVY);
+  doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(navy[0],navy[1],navy[2]);
+  doc.text(title, x, y);
+  doc.setFont('helvetica','normal');
+  if (!rows || !rows.length) { doc.setFontSize(9); doc.setTextColor(150,150,150); doc.text("Tidak ada data.", x, y+18); return; }
+  const top = y + 12;
+  const maxVal = Math.max(...rows.map(r=>r.value), 1);
+  const labelW = 130, valW = 54;
+  const barAreaW = Math.max(40, w - labelW - valW);
+  const rowH = Math.min(20, (h - 14) / rows.length);
+  const col = hexRGB(colorHex);
+  rows.forEach((r,i)=>{
+    const cy = top + i*rowH, midY = cy + rowH*0.62;
+    doc.setFontSize(7.5); doc.setTextColor(70,70,70);
+    const lbl = String(r.label||'').length>26 ? String(r.label).slice(0,25)+'…' : String(r.label||'');
+    doc.text(lbl, x+labelW-5, midY, { align:'right' });
+    const bw = Math.max(1.5, (r.value/maxVal)*barAreaW);
+    doc.setFillColor(col[0],col[1],col[2]);
+    doc.rect(x+labelW, cy+1.5, bw, Math.max(3, rowH-4), 'F');
+    doc.setTextColor(40,40,40); doc.setFontSize(7.5);
+    doc.text(valFmt(r.value), x+labelW+bw+4, midY);
+  });
+}
+const pencHex = (p)=> p>=100 ? ["DCFCE7","15803D"] : p>=80 ? ["FEF3C7","B45309"] : ["FEE2E2","B91C1C"];
+const deltaHex = (v)=> v<0 ? "B91C1C" : "15803D"; // negatif merah, >=0 hijau
+
+const mcol = (label, kind="num", header="navy") => ({ label, kind, header });
+const M_POS = [ mcol("POSISI 31/12/2025"), mcol("POSISI 31/05/2026"), mcol("POSISI 25/06/2026"), mcol("POSISI 26/06/2026") ];
+const M_DELTA3 = [ mcol("(Delta Hari Kemarin) Δ THD 25/06/2026","delta","orange"), mcol("(Delta Bulan Lalu) Δ THD 31/05/2026","delta","orange"), mcol("(Delta Akhir Tahun) Δ THD 31/12/2025","delta","orange") ];
+const M_PCTTAIL = [
+  mcol("Delta (%) RKA BULAN 5","delta"), mcol("PENC (%) RKA BULAN 5","badge"),
+  mcol("Delta (%) RKA BULAN 6","delta"), mcol("PENC (%) RKA BULAN 6","badge"),
+  mcol("Delta (%) RKA BULAN 12","delta"), mcol("PENC (%) RKA BULAN 12","badge"),
+];
+const MANTRI_CFG = {
+  mantriRealisasi: {
+    title:"Realisasi Pinjaman Mantri 1 Tahun",
+    sub:"Data Realisasi Pinjaman Bulan Ini, Bulan Lalu, dan Realisasi 1 Tahun Sesuai PN Prakarsa (Pinjaman Yang Masih Aktif).",
+    idCols:[ {label:"KODE UKER",key:"kode"}, {label:"UNIT",key:"unit"} ],
+    valCols:[ mcol("REALISASI TGL 1 S/D 31/05/2026"), mcol("REALISASI TGL 1 S/D 25/06/2026"), mcol("REALISASI TGL 1 S/D 26/06/2026"),
+      mcol("(Delta Hari Kemarin) Δ THD 25/06/2026","delta","orange"), mcol("(Delta Bulan Lalu) Δ THD 31/05/2026","delta","orange"),
+      ...Array.from({length:12},(_,i)=>mcol(`REALISASI BLN ${i+1} (PN PRAKARSA)`)),
+      mcol("TOTAL REALISASI S/D BLN 6 (PN PRAKARSA)"), mcol("TARGET MANTRI BULAN 6"), mcol("PENC (Rp) BULAN 6"), mcol("PENC (%) BULAN 6","badge") ],
+    sections:[ {prefix:"TOTAL (Rp)",key:"rp"}, {prefix:"TOTAL (Rek)",key:"rek"} ] },
+  mantriOs: {
+    title:"Os Dan Rek Pinjaman Mantri Per Uker", sub:"Os Dan Rek Pinjaman Mantri Per Uker Sesuai Kelolaan Mantri Saat Ini.",
+    idCols:[ {label:"UNIT",key:"unit"} ], valCols:[ ...M_POS, ...M_DELTA3 ],
+    sections:[ {prefix:"TOTAL (Rp) OS",key:"rp"}, {prefix:"TOTAL (Rek) Pinj",key:"rek"} ] },
+  mantriSmlRp: {
+    title:"SML (Rp & Rek) Pinjaman Mantri Per Uker", sub:"SML (Rp & Rek) Pinjaman Per Mantri Per Uker Sesuai Kelolaan Mantri Saat Ini.",
+    idCols:[ {label:"UNIT",key:"unit"} ], valCols:[ ...M_POS, ...M_DELTA3 ],
+    sections:[ {prefix:"TOTAL (Rp) SML",key:"rp"}, {prefix:"TOTAL (Rek) SML",key:"rek"} ] },
+  mantriNplRp: {
+    title:"NPL (Rp & Rek) Pinjaman Mantri Per Uker", sub:"NPL (Rp & Rek) Pinjaman Per Mantri Per Uker Sesuai Kelolaan Mantri Saat Ini.",
+    idCols:[ {label:"UNIT",key:"unit"} ], valCols:[ ...M_POS, ...M_DELTA3 ],
+    sections:[ {prefix:"TOTAL (Rp) NPL",key:"rp"}, {prefix:"TOTAL (Rek) NPL",key:"rek"} ] },
+  mantriSmlPct: {
+    title:"SML (%) Pinjaman Mantri Per Uker", sub:"SML (%) Pinjaman Per Mantri Per Uker Sesuai Kelolaan Mantri Saat Ini.",
+    idCols:[ {label:"UNIT",key:"unit"} ],
+    valCols:[ mcol("RKA BULAN 5","num","orange"),mcol("RKA BULAN 6","num","orange"),mcol("RKA BULAN 12","num","orange"), ...M_POS, ...M_DELTA3, ...M_PCTTAIL ],
+    sections:[ {prefix:"TOTAL (%) SML",key:"pct"} ] },
+  mantriNplPct: {
+    title:"NPL (%) Pinjaman Mantri Per Uker", sub:"NPL (%) Pinjaman Per Mantri Per Uker Sesuai Kelolaan Mantri Saat Ini.",
+    idCols:[ {label:"UNIT",key:"unit"} ],
+    valCols:[ mcol("RKA BULAN 5","num","orange"),mcol("RKA BULAN 6","num","orange"),mcol("RKA BULAN 12","num","orange"), ...M_POS, ...M_DELTA3, ...M_PCTTAIL ],
+    sections:[ {prefix:"TOTAL (%) NPL",key:"pct"} ] },
+  mantriNetDgSml: {
+    title:"Pencapaian Net Downgrade SML Per Mantri", sub:"Data Berdasarkan Posisi LW321. Wajib Upload Nominatif PH Terbaru Untuk Mengetahui Pinjaman Yang Ke PH.",
+    idCols:[ {label:"KODE UKER",key:"kode"}, {label:"UNIT",key:"unit"} ],
+    valCols:[ mcol("KELOLAAN LANCAR 31/05/2026"), mcol("MAX DOWNGRADE SML (0.4% X KELOLAAN LANCAR)"),
+      mcol("SML DOWNGRADE 26/06/2026","num","orange"), mcol("SML UPGRADE 26/06/2026","num","orange"),
+      mcol("NET DOWNGRADE SML","delta"), mcol("PENCAP% NET DOWNGRADE SML","badge") ],
+    sections:[ {prefix:"TOTAL (Rp)",key:"rp"}, {prefix:"TOTAL (Rek)",key:"rek"} ] },
+  mantriNetDgNpl: {
+    title:"Pencapaian Net Downgrade NPL Per Mantri", sub:"Data Berdasarkan Posisi LW321. Wajib Upload Nominatif PH Terbaru Untuk Mengetahui Pinjaman Yang Ke PH.",
+    idCols:[ {label:"KODE UKER",key:"kode"}, {label:"UNIT",key:"unit"} ],
+    valCols:[ mcol("KELOLAAN SML 31/05/2026"), mcol("MAX DOWNGRADE NPL (5% X KELOLAAN SML)"),
+      mcol("NPL DOWNGRADE 26/06/2026","num","orange"), mcol("NPL UPGRADE 26/06/2026 (NOMINATIF PH TGL 6/25/2026)","num","orange"),
+      mcol("NET DOWNGRADE NPL","delta"), mcol("PENCAP% NET DOWNGRADE NPL","badge") ],
+    sections:[ {prefix:"TOTAL (Rp)",key:"rp"}, {prefix:"TOTAL (Rek)",key:"rek"} ] },
+};
+// ── Agregasi per-mantri dari snapshot LW321 (beberapa tanggal) ───────────────
+const round2 = (v)=> Math.round((+v||0)*100)/100;
+const POS_REPORTS = new Set(["mantriOs","mantriSmlRp","mantriNplRp","mantriSmlPct","mantriNplPct"]); // pakai kolom POSISI tiap tanggal
+const PCT_REPORTS = new Set(["mantriSmlPct","mantriNplPct"]);
+
+// Nilai metrik report dari satu baris agregat backend (atau jumlahan baris unit).
+function metricFromAgg(reportId, row, key) {
+  if (!row) return 0;
+  const n = (x)=>Number(x)||0;
+  switch (reportId) {
+    case "mantriOs":     return key==="rek" ? n(row.rek)     : n(row.os);
+    case "mantriSmlRp":  return key==="rek" ? n(row.sml_rek) : n(row.sml_rp);
+    case "mantriNplRp":  return key==="rek" ? n(row.npl_rek) : n(row.npl_rp);
+    case "mantriSmlPct": { const os=n(row.os); return os>0 ? n(row.sml_rp)/os*100 : 0; }
+    case "mantriNplPct": { const os=n(row.os); return os>0 ? n(row.npl_rp)/os*100 : 0; }
+    default: return 0;
+  }
+}
+// Jumlahkan beberapa baris agregat → satu baris (untuk total unit).
+function sumAggRows(rows) {
+  const o = { os:0, rek:0, lancar_rp:0, lancar_rek:0, sml_rp:0, sml_rek:0, npl_rp:0, npl_rek:0 };
+  rows.forEach(r => { for (const k in o) o[k] += Number(r[k])||0; });
+  return o;
+}
+
+function buildMantriData(reportId, snaps) {
+  const baseCfg = MANTRI_CFG[reportId];
+  const refs = Array.isArray(snaps) ? snaps : [];     // urut lama → baru
+  const terkini = refs.length ? refs[refs.length-1] : null;
+
+  // Agregat per-unit tiap snapshot (untuk baris TOTAL).
+  const refsU = refs.map(s => {
+    const grp = {};
+    Object.values(s.byMantri||{}).forEach(r => { (grp[r.kode_uker] = grp[r.kode_uker] || []).push(r); });
+    const byUnit = {}; Object.entries(grp).forEach(([k,rows]) => byUnit[k] = sumAggRows(rows));
+    return { ...s, byUnit };
+  });
+
+  // cfg dinamis: kolom POSISI & delta mengikuti tanggal snapshot yang benar-benar ada.
+  // Delta diurutkan: kemarin → bulan lalu → akhir tahun (sama seperti Kaka Mantri).
+  const DELTA_DESC = { kemarin:'Delta Hari Kemarin', bulanLalu:'Delta Bulan Lalu', akhirThn:'Delta Akhir Tahun' };
+  let cfg = baseCfg, lead = [], tail = [];
+  // Refs untuk delta: semua kecuali terkini, dibalik (kemarin → bulanLalu → akhirThn)
+  const refsForDelta = refs.slice(0,-1).slice().reverse();
+  if (POS_REPORTS.has(reportId) && refs.length) {
+    const posCols   = refs.map(r => mcol(`POSISI ${r.label}`));
+    const deltaCols = refsForDelta.map(r => {
+      const desc = DELTA_DESC[r.key];
+      return mcol(desc ? `(${desc}) Δ THD ${r.label}` : `Δ THD ${r.label}`, "delta", "orange");
+    });
+    if (PCT_REPORTS.has(reportId)) { lead = baseCfg.valCols.slice(0,3); tail = baseCfg.valCols.slice(10); }
+    cfg = { ...baseCfg, valCols:[...lead, ...posCols, ...deltaCols, ...tail] };
+  }
+
+  // Vals satu entitas (mantri/unit) dari baris agregatnya per snapshot.
+  const valsOf = (rowPerRef, key) => {
+    if (POS_REPORTS.has(reportId) && refs.length) {
+      const pos = refs.map((r,ri) => round2(metricFromAgg(reportId, rowPerRef[ri], key)));
+      const cur = pos[pos.length-1];
+      // Delta diurutkan sesuai refsForDelta (kemarin → bulanLalu → akhirThn)
+      const deltas = refsForDelta.map(r => { const ri = refs.indexOf(r); return round2(cur - pos[ri]); });
+      return [ ...lead.map(()=>0), ...pos, ...deltas, ...tail.map(()=>0) ];
+    }
+    // Non-posisi (Net DG, Realisasi): hanya snapshot terkini; pergerakan/realisasi belum ada → 0.
+    const row = rowPerRef[rowPerRef.length-1];
+    const vals = new Array(baseCfg.valCols.length).fill(0);
+    const n = (x)=>Number(x)||0;
+    if (reportId==="mantriNetDgSml")      { const kel = key==="rek"?n(row?.lancar_rek):n(row?.lancar_rp); vals[0]=round2(kel); vals[1]=key==="rp"?round2(kel*0.004):0; }
+    else if (reportId==="mantriNetDgNpl") { const kel = key==="rek"?n(row?.sml_rek):n(row?.sml_rp);       vals[0]=round2(kel); vals[1]=key==="rp"?round2(kel*0.05):0; }
+    return vals;
+  };
+
+  // Semesta unit/mantri = snapshot terkini ("sesuai kelolaan mantri saat ini").
+  // Hanya tampilkan UNIT (kode diawali '5') — KC/KCP tidak masuk laporan mantri per unit.
+  const hasKode = cfg.idCols.some(c => c.key === "kode");
+  const unitMap = {};
+  Object.values(terkini?.byMantri || {}).forEach(r => {
+    if (!String(r.kode_uker||"").startsWith("5")) return;
+    const U = unitMap[r.kode_uker] || (unitMap[r.kode_uker] = { kode:r.kode_uker, nama:shortUker(r.uker_nama||r.kode_uker), mantri:[] });
+    U.mantri.push({ key:`${r.kode_uker}|${r.ao_id}`, pn:r.pn||r.ao_id||"", nama:r.ao||"-", os:Number(r.os)||0 });
+  });
+  const units = Object.values(unitMap).sort((a,b)=>String(a.kode).localeCompare(String(b.kode)));
+  units.forEach(u => u.mantri.sort((a,b)=>b.os-a.os));
+
+  const blocks = units.map(u => ({
+    unitName:u.nama, kode:u.kode,
+    sections: cfg.sections.map((sec) => {
+      const rows = u.mantri.map((mt) => {
+        const rowPerRef = refsU.map(s => s.byMantri[mt.key]);
+        const who = mt.pn || "(PN kosong)";
+        const unit = hasKode ? `${who} - ${mt.nama}` : `${u.kode} - ${who} - ${mt.nama}`;
+        return { kode:u.kode, unit, vals: valsOf(rowPerRef, sec.key) };
+      });
+      const total = valsOf(refsU.map(s => s.byUnit[u.kode]), sec.key);
+      return { label:`${sec.prefix} ${u.nama}`, total, rows };
+    }),
+  }));
+  return { cfg, blocks };
+}
+const Pill = ({ v }) => { const [bg,fg]=pencHex(v); return <span style={{ display:"inline-block", minWidth:50, textAlign:"center", padding:"2px 7px", borderRadius:5, background:`#${bg}`, color:`#${fg}`, fontWeight:700, fontSize:10 }}>{fR(v)}%</span>; };
+
+function MantriReport({ reportId, snaps }) {
+  const { cfg, blocks } = useMemo(()=>buildMantriData(reportId, snaps), [reportId, snaps]);
+  const loading = snaps === null;
+  const idN = cfg.idCols.length;
+  const nCol = idN + cfg.valCols.length;
+  const headBg = (c)=> c.header==="orange" ? `#${M_ORANGE}` : `#${M_NAVY}`;
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+      <div style={card}>
+        <div style={{ fontSize:16, fontWeight:800, color:C.navy }}>{cfg.title}</div>
+        <div style={{ fontSize:12.5, color:C.gray, marginTop:2 }}>{cfg.sub}</div>
+        <div style={{ display:"flex", gap:8, marginTop:12 }}>
+          <button onClick={()=>exportMantriExcel(reportId, snaps)} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", background:C.kpiGreen, color:"#fff", border:"none", borderRadius:7, fontSize:12.5, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={15} /> Simpan Excel</button>
+          <button onClick={()=>exportMantriPDF(reportId, snaps)}   style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", background:C.kpiRed, color:"#fff", border:"none", borderRadius:7, fontSize:12.5, fontWeight:600, cursor:"pointer" }}><Ic n="download" size={15} /> Simpan PDF</button>
+        </div>
+        <div style={{ fontSize:11, color:C.amber, marginTop:8 }}>* Kolom POSISI diisi dari snapshot LW321 di tiap tanggal yang tersedia (akhir tahun lalu, akhir bulan lalu, kemarin, terkini) beserta selisihnya. Kolom yang sumber datanya belum tersedia — realisasi, target RKA, & pergerakan downgrade/upgrade (butuh Nominatif PH) — ditampilkan 0.</div>
+      </div>
+      <div style={{ ...card, padding:0, overflow:"hidden" }}>
+        <div style={{ overflowX:"auto", overflowY:"auto", maxHeight:"68vh" }}>
+          <table style={{ borderCollapse:"collapse", fontSize:11 }}>
+            <thead><tr>
+              {[...cfg.idCols, ...cfg.valCols].map((c,i)=>{
+                const isId = i < idN;
+                return <th key={i} style={{ padding:"7px 9px", background: isId?`#${M_NAVY}`:headBg(c), color:"#fff", fontWeight:700, fontSize:9, textAlign:isId?"left":"center",
+                  border:"1px solid #fff", minWidth:isId?(idN>1&&i===0?70:200):92, maxWidth:200, whiteSpace:"normal", lineHeight:1.2, verticalAlign:"middle",
+                  position:"sticky", top:0, zIndex:2 }}>{c.label}</th>;
+              })}
+            </tr></thead>
+            <tbody>
+              {blocks.length === 0 && (
+                <tr><td colSpan={nCol} style={{ padding:24, textAlign:"center", color:C.gray, fontSize:12.5 }}>{loading ? "Memuat data mantri…" : "Belum ada data LW321. Upload file LW321 terlebih dahulu."}</td></tr>
+              )}
+              {blocks.map((b)=> b.sections.map((sec,si)=>[
+                <tr key={b.kode+si+"t"} style={{ background:`#${M_BEIGE}`, fontWeight:700 }}>
+                  {cfg.idCols.map((ic,ii)=><td key={ii} style={{ padding:"6px 9px", border:`1px solid #${M_BBORD}`, color:C.text, fontSize:10.5, whiteSpace:"nowrap" }}>{ii===idN-1?sec.label:""}</td>)}
+                  {cfg.valCols.map((c,ci)=>{ const v=sec.total[ci]; return (
+                    <td key={ci} style={{ padding:"6px 9px", border:`1px solid #${M_BBORD}`, textAlign: c.kind==="badge"?"center":"right", color: c.kind==="delta"?`#${deltaHex(v)}`:C.text, fontSize:10.5, whiteSpace:"nowrap" }}>
+                      {c.kind==="badge" ? <Pill v={v} /> : fR(v)}
+                    </td>); })}
+                </tr>,
+                ...sec.rows.map((r,ri)=>(
+                  <tr key={b.kode+si+ri} style={{ background: ri%2?`#${M_STRIPE}`:"#fff" }}>
+                    {cfg.idCols.map((ic,ii)=><td key={ii} style={{ padding:"5px 9px", border:"1px solid #eee", color:C.textMd, fontSize:10.5, whiteSpace:"nowrap" }}>{r[ic.key]}</td>)}
+                    {cfg.valCols.map((c,ci)=>{ const v=r.vals[ci]; return (
+                      <td key={ci} style={{ padding:"5px 9px", border:"1px solid #eee", textAlign: c.kind==="badge"?"center":"right", color: c.kind==="delta"?`#${deltaHex(v)}`:C.textMd, fontWeight: c.kind==="delta"?600:400, fontSize:10.5, whiteSpace:"nowrap" }}>
+                        {c.kind==="badge" ? <Pill v={v} /> : fR(v)}
+                      </td>); })}
+                  </tr>
+                )),
+              ]))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function exportMantriExcel(reportId, snaps) {
+  const { cfg, blocks } = buildMantriData(reportId, snaps);
+  const idN = cfg.idCols.length, nC = idN + cfg.valCols.length;
+  const aoa = [], meta = [];
+  aoa.push([...cfg.idCols.map(c=>c.label), ...cfg.valCols.map(c=>c.label)]); meta.push({ t:"head" });
+  blocks.forEach(b => b.sections.forEach(sec => {
+    aoa.push([...cfg.idCols.map((c,i)=> i===idN-1 ? sec.label : ""), ...sec.total]); meta.push({ t:"total" });
+    sec.rows.forEach((r,ri)=>{ aoa.push([...cfg.idCols.map(c=>r[c.key]), ...r.vals]); meta.push({ t:"data", ri }); });
+  }));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [...cfg.idCols.map(c=>({ wch: c.key==="kode" ? 10 : 38 })), ...cfg.valCols.map(c=>({ wch: 14 }))];
+  ws["!rows"] = [{ hpt: 30 }];
+  const thin=(rgb)=>({ style:"thin", color:{ rgb } });
+  const border={ top:thin("D9D9D9"), bottom:thin("D9D9D9"), left:thin("D9D9D9"), right:thin("D9D9D9") };
+  meta.forEach((mr, r) => {
+    for (let c=0;c<nC;c++){ const a=XLSX.utils.encode_cell({r,c}); if(!ws[a]) continue;
+      const isVal = c>=idN; const col = isVal ? cfg.valCols[c-idN] : null; const v = ws[a].v;
+      if (mr.t==="head") {
+        ws[a].s = { fill:{patternType:"solid",fgColor:{rgb: col&&col.header==="orange"?M_ORANGE:M_NAVY}}, font:{bold:true,color:{rgb:"FFFFFF"},sz:8}, alignment:{horizontal:isVal?"center":"left",vertical:"center",wrapText:true}, border };
+      } else if (mr.t==="total") {
+        const st = { fill:{patternType:"solid",fgColor:{rgb:M_BEIGE}}, font:{bold:true,sz:9,color:{rgb:"344054"}}, alignment:{horizontal:isVal?"right":"left",vertical:"center"}, border };
+        if (isVal && col.kind==="delta" && typeof v==="number") st.font.color={rgb:deltaHex(v)};
+        if (isVal && col.kind==="badge" && typeof v==="number"){ const [bg,fg]=pencHex(v); st.fill.fgColor={rgb:bg}; st.font.color={rgb:fg}; st.alignment.horizontal="center"; ws[a].z='0.00"%"'; }
+        else if (isVal) ws[a].z='#,##0.00';
+        ws[a].s = st;
+      } else {
+        const st = { fill:{patternType:"solid",fgColor:{rgb: mr.ri%2?M_STRIPE:"FFFFFF"}}, font:{sz:9,color:{rgb:"344054"}}, alignment:{horizontal:isVal?"right":"left",vertical:"center"}, border };
+        if (isVal && col.kind==="delta" && typeof v==="number"){ st.font.color={rgb:deltaHex(v)}; st.font.bold=true; }
+        if (isVal && col.kind==="badge" && typeof v==="number"){ const [bg,fg]=pencHex(v); st.fill.fgColor={rgb:bg}; st.font.color={rgb:fg}; st.font.bold=true; st.alignment.horizontal="center"; ws[a].z='0.00"%"'; }
+        else if (isVal) ws[a].z='#,##0.00';
+        ws[a].s = st;
+      }
+    }
+  });
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Mantri");
+  XLSX.writeFile(wb, `${cfg.title.replace(/[^\w]+/g,"_")}_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+function exportMantriPDF(reportId, snaps) {
+  const { cfg, blocks } = buildMantriData(reportId, snaps);
+  const idN = cfg.idCols.length;
+  const wide = cfg.valCols.length > 10;
+  const doc = new jsPDF({ orientation:"landscape", unit:"pt", format: wide?"a3":"a4" });
+  const san = (s)=> String(s).replace(/Δ/g, "");
+  const head = [[...cfg.idCols.map(c=>c.label), ...cfg.valCols.map(c=>san(c.label))]];
+  const columnStyles = Object.fromEntries(cfg.idCols.map((c,i)=>[i, { halign:"left", cellWidth: c.key==="kode" ? 34 : 138 }]));
+
+  // Satu unit kerja = satu halaman (header kolom diulang per halaman), seperti KAKA Mantri.
+  blocks.forEach((b, bi) => {
+    if (bi > 0) doc.addPage();
+    doc.setFontSize(12); doc.setTextColor(15,42,80); doc.text(cfg.title, 28, 26);
+    const body = [], rowMeta = [];
+    b.sections.forEach(sec => {
+      body.push([...cfg.idCols.map((c,i)=> i===idN-1 ? sec.label : ""), ...sec.total.map((v,ci)=> cfg.valCols[ci].kind==="badge"?fR(v)+"%":fR(v))]); rowMeta.push({ t:"total" });
+      sec.rows.forEach(r=>{ body.push([...cfg.idCols.map(c=>r[c.key]), ...r.vals.map((v,ci)=> cfg.valCols[ci].kind==="badge"?fR(v)+"%":fR(v))]); rowMeta.push({ t:"data" }); });
+    });
+    autoTable(doc, {
+      startY: 38, head, body,
+      styles:{ fontSize: wide?5.5:7, cellPadding:2, overflow:"linebreak", valign:"middle", lineColor:[217,217,217], lineWidth:0.3, halign:"right" },
+      columnStyles,
+      headStyles:{ fillColor:hexRGB(M_NAVY), textColor:255, fontStyle:"bold", halign:"center" },
+      margin:{ left:28, right:28 },
+      didParseCell: (d) => {
+        const ci = d.column.index, col = ci>=idN ? cfg.valCols[ci-idN] : null;
+        if (d.section==="head") { if (col && col.header==="orange") d.cell.styles.fillColor = hexRGB(M_ORANGE); return; }
+        const m = rowMeta[d.row.index];
+        if (m && m.t==="total") { d.cell.styles.fillColor = hexRGB(M_BEIGE); d.cell.styles.fontStyle="bold"; }
+        if (col) {
+          const raw = parseFloat(String(d.cell.raw).replace(/[,%]/g,""));
+          if (col.kind==="delta" && !isNaN(raw)) d.cell.styles.textColor = hexRGB(deltaHex(raw));
+          if (col.kind==="badge" && !isNaN(raw)) { const [bg,fg]=pencHex(raw); d.cell.styles.fillColor=hexRGB(bg); d.cell.styles.textColor=hexRGB(fg); d.cell.styles.halign="center"; d.cell.styles.fontStyle="bold"; }
+        }
+      },
+    });
+  });
+  doc.save(`${cfg.title.replace(/[^\w]+/g,"_")}_${new Date().toISOString().slice(0,10)}.pdf`);
 }
 
 const MENU = [
@@ -2638,6 +4433,16 @@ const MENU = [
   { id:"kinerjaAO",   label:"Kinerja RM/Mantri", icon:"userPerf",  chevron:true, title:"KINERJA RM/MANTRI", sub:"Rekap kinerja per RM/Mantri" },
   { id:"kinerjaUnit", label:"Kinerja Unit",     icon:"building",  chevron:true, title:"KINERJA UNIT KERJA", sub:"Rekap kinerja per unit kerja" },
   { id:"osKurang50",  label:"OS < 50%",         icon:"percent",   chevron:true, title:"DEBITUR OS < 50% PLAFON", sub:"Debitur dengan outstanding di bawah 50% plafon awal" },
+  { id:"buatLaporan", label:"Buat Laporan",     icon:"infoDoc",   chevron:true, title:"BUAT LAPORAN DEBITUR", sub:"Susun kolom & filter, lalu unduh Excel atau PDF" },
+  { id:"secMantri",       section:true, label:"Data Mantri" },
+  { id:"mantriRealisasi", label:"Realisasi Mantri 1 Tahun", icon:"wallet",  chevron:true, title:"REALISASI MANTRI 1 TAHUN", sub:"Tabel + ekspor Excel/PDF" },
+  { id:"mantriOs",        label:"Os Mantri",                icon:"trend",   chevron:true, title:"OS MANTRI", sub:"Tabel + ekspor Excel/PDF" },
+  { id:"mantriSmlRp",     label:"SML (Rp) Mantri",          icon:"warning", chevron:true, title:"SML (RP) MANTRI", sub:"Tabel + ekspor Excel/PDF" },
+  { id:"mantriNplRp",     label:"NPL (Rp) Mantri",          icon:"warning", chevron:true, title:"NPL (RP) MANTRI", sub:"Tabel + ekspor Excel/PDF" },
+  { id:"mantriSmlPct",    label:"SML (%) Mantri",           icon:"percent", chevron:true, title:"SML (%) MANTRI", sub:"Tabel + ekspor Excel/PDF" },
+  { id:"mantriNplPct",    label:"NPL (%) Mantri",           icon:"percent", chevron:true, title:"NPL (%) MANTRI", sub:"Tabel + ekspor Excel/PDF" },
+  { id:"mantriNetDgSml",  label:"Net DG SML Mantri",        icon:"shield",  chevron:true, title:"NET DG SML MANTRI", sub:"Tabel + ekspor Excel/PDF" },
+  { id:"mantriNetDgNpl",  label:"Net DG NPL Mantri",        icon:"shield",  chevron:true, title:"NET DG NPL MANTRI", sub:"Tabel + ekspor Excel/PDF" },
   { id:"manajemen",   label:"Manajemen User",   icon:"users",     chevron:true, title:"MANAJEMEN USER", sub:"Kelola akun & hak akses pengguna sistem" },
   { id:"pengaturan",  label:"Pengaturan",       icon:"gear",      chevron:true, title:"PENGATURAN", sub:"Import data, unit kerja & parameter sistem" },
 ];
@@ -2656,6 +4461,9 @@ function Sidebar({ page, setPage, menus, periode }) {
       </div>
       <nav style={{ padding:"4px 8px", display:"flex", flexDirection:"column", gap:2 }}>
         {menus.map(m=>{
+          if (m.section) return (
+            <div key={m.id} style={{ padding:"14px 14px 4px", fontSize:9.5, fontWeight:700, letterSpacing:.8, color:C.sidebarMuted, textTransform:"uppercase" }}>{m.label}</div>
+          );
           const active = page===m.id;
           return (
             <div key={m.id} onClick={()=>setPage(m.id)} onMouseEnter={()=>setHover(m.id)} onMouseLeave={()=>setHover(null)}
@@ -2670,7 +4478,15 @@ function Sidebar({ page, setPage, menus, periode }) {
         })}
       </nav>
       <div style={{ marginTop:"auto", padding:"12px 16px", borderTop:"1px solid rgba(255,255,255,.08)", fontSize:11, color:C.sidebarMuted }}>
-        Demo · Data Mock · {periode}
+        <div>Demo · Data Mock · {periode}</div>
+        <div style={{ marginTop:6, display:"flex", alignItems:"center", gap:6 }}>
+          <span>Dibuat oleh</span>
+          <a href="https://mfaridsyam.vercel.app" target="_blank" rel="noopener noreferrer"
+            style={{ color:"#BCD3F0", fontWeight:700, textDecoration:"none", borderBottom:"1px solid rgba(188,211,240,.4)" }}
+            onMouseEnter={e=>e.currentTarget.style.color="#fff"} onMouseLeave={e=>e.currentTarget.style.color="#BCD3F0"}>
+            mfaridsyam.vercel.app
+          </a>
+        </div>
       </div>
     </aside>
   );
@@ -2691,8 +4507,8 @@ function Login({ onLogin, localUsers }) {
     setError(""); onLogin(u);
   };
 
-  const ROLE_LABEL = { admin:"Admin IT", pinca:"Pimpinan Cabang", mb:"Manajer Bisnis", kepalaUnit:"Kepala Unit", ao:"AO / Mantri", collection:"Collection Officer" };
-  const grouped = ["admin","pinca","mb","kepalaUnit","ao","collection"]
+  const ROLE_LABEL = { superadmin:"Super Admin IT", admin:"Admin IT", pinca:"Pimpinan Cabang", mb:"Manajer Bisnis", kepalaUnit:"Kepala Unit", ao:"AO / Mantri", collection:"Collection Officer" };
+  const grouped = ["superadmin","admin","pinca","mb","kepalaUnit","ao","collection"]
     .map(r=>({ role:r, users:localUsers.filter(u=>u.role===r && u.aktif) })).filter(g=>g.users.length);
 
   const inp = (extra={}) => ({
@@ -2802,24 +4618,32 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [role, setRole] = useState(null);
   const [page, setPage] = useState("dashboard");
+  const [debiturPreset, setDebiturPreset] = useState(null); // filter awal Daftar Debitur (mis. dari klik chart sektor/segmen)
+  const [kinerjaPreset, setKinerjaPreset] = useState(null); // deep-link Kinerja Unit → unit → mantri → debitur (breakdown terbuka)
+  const contentRef = useRef(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [filters, setFilters] = useState({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" });
   const [profileOpen, setProfileOpen] = useState(false);
   const [periodeOpen, setPeriodeOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [availablePeriodes, setAvailablePeriodes] = useState([]);
   const [uploadedData, setUploadedData] = useState(null);
+  const [ckpnData,     setCkpnData]     = useState(null);
+  const [recPhData,    setRecPhData]    = useState(null);
+  const [mantriSnaps,  setMantriSnaps]  = useState(null); // snapshot agregat per mantri (akhir thn lalu, akhir bln lalu, kemarin, terkini)
+  const [actionPlansData, setActionPlansData] = useState([]); // action plan asli (tabel action_plans) untuk rekap mantri
   const [dbLoading, setDbLoading] = useState(false);
   const [dbProgress, setDbProgress] = useState(0);
   const [dbProgressLabel, setDbProgressLabel] = useState("");
   const [localUsers, setLocalUsers] = useState(USERS);
 
   // Fungsi inti: load debitur untuk upload tertentu (cek IDB cache dulu)
-  const loadDebiturForUpload = async (upload, uploadHistory) => {
+  const loadDebiturForUpload = async (upload, uploadHistory, uploadHistoryAll = []) => {
     const cacheKey = `debitur-${upload.id}`;
     const cached = await idbGet(cacheKey);
     if (cached?.debitur?.length) {
       setDbProgress(100); setDbProgressLabel("Data dimuat dari cache");
-      setUploadedData({ ...cached, uploadHistory });
+      setUploadedData({ ...cached, uploadHistory, uploadHistoryAll });
       setFilters(f => ({ ...f, periode: upload.periode_label }));
       return;
     }
@@ -2829,9 +4653,7 @@ export default function App() {
     let allRows = [], page = 0, hasMore = true;
     while (hasMore) {
       const from = page * PAGE;
-      const { data: rows, error } = await supabase
-        .from('debitur').select('*').eq('upload_id', upload.id)
-        .range(from, from + PAGE - 1);
+      const { data: rows, error } = await fetchDebitur({ upload_id: upload.id, from, to: from + PAGE - 1 });
       if (error) throw error;
       if (!rows?.length) { hasMore = false; break; }
       allRows = allRows.concat(rows);
@@ -2849,7 +4671,8 @@ export default function App() {
       cif: r.cif, nama: r.nama, ao: r.ao, aoId: r.ao_id, pn: r.pn,
       uker: r.kode_uker, ukerNama: r.uker_nama, segment: r.segment,
       sektor: r.sektor, osJt: r.os_jt, kol: r.kol, dpd: r.dpd,
-      skor: r.skor, tier: r.tier, hasAction: r.has_action, resolved: r.resolved,
+      skor: r.skor, tier: r.tier, flagRestruk: r.flag_restruk || 'N',
+      hasAction: r.has_action, resolved: r.resolved,
       tunggakanPokok: r.tunggakan_pokok, tunggakanBunga: r.tunggakan_bunga,
       tunggakanDenda: r.tunggakan_denda, tunggakanPenalty: r.tunggakan_penalty,
       tunggakanTotal: r.tunggakan_total,
@@ -2862,7 +4685,7 @@ export default function App() {
       datePrinted: upload.date_printed || '',
       totalRows: debitur.length,
     };
-    setUploadedData({ ...uploadData, uploadHistory });
+    setUploadedData({ ...uploadData, uploadHistory, uploadHistoryAll });
     setFilters(f => ({ ...f, periode: upload.periode_label }));
     idbSet(cacheKey, uploadData);
   };
@@ -2872,29 +4695,33 @@ export default function App() {
     setDbProgressLabel("Menghubungkan ke database...");
     try {
       // Query utama — hanya kolom yang pasti ada
-      const { data: allUploads, error: upErr } = await supabase
-        .from('uploads')
-        .select('id, tgl_file, periode_label, row_count')
-        .eq('jenis', 'lw321').order('tgl_file', { ascending: false });
+      const { data: allUploads, error: upErr } = await fetchUploads({ fields: 'id,tgl_file,periode_label,row_count', jenis: 'lw321', order: 'desc' });
       if (upErr || !allUploads?.length) return;
       // Deduplicate per periode_label — pakai tgl_file terbaru (allUploads sudah sorted desc)
       const seen = new Set();
       setAvailablePeriodes(allUploads.filter(u => seen.has(u.periode_label) ? false : seen.add(u.periode_label)));
 
       // Query opsional — trend data (gagal diam-diam kalau kolom belum dibuat)
-      let uploadHistory = [];
-      const { data: withTotals } = await supabase
-        .from('uploads')
-        .select('id, tgl_file, periode_label, total_os_jt, total_tunggakan_jt')
-        .eq('jenis', 'lw321').order('tgl_file', { ascending: true });
+      let uploadHistory = [], uploadHistoryAll = [];
+      const { data: withTotals } = await fetchUploads({ fields: 'id,tgl_file,periode_label,row_count,total_os_jt,total_tunggakan_jt', jenis: 'lw321', order: 'asc' });
       if (withTotals) {
         const valid = withTotals.filter(u => u.total_os_jt != null);
-        if (valid.length >= 2) {
-          uploadHistory = valid.map(u => ({ periodeLabel: u.periode_label, totalOsJt: u.total_os_jt, totalTunggakanJt: u.total_tunggakan_jt }));
+        if (valid.length >= 1) {
+          const mapU = u => ({ periodeLabel: u.periode_label, tglFile: u.tgl_file, rowCount: u.row_count, totalOsJt: u.total_os_jt, totalTunggakanJt: u.total_tunggakan_jt });
+          // Semua upload dengan tgl_file (untuk Bulan Ini per-tanggal)
+          uploadHistoryAll = valid.map(mapU);
+          // Deduplikasi per periode — acuan file bulanan = tgl_file TERBESAR (tanggal terakhir bulan itu).
+          // Eksplisit pilih max(tgl_file) agar tidak bergantung urutan query.
+          const seenP = new Map();
+          valid.forEach(u => {
+            const prev = seenP.get(u.periode_label);
+            if (!prev || String(u.tgl_file) > String(prev.tgl_file)) seenP.set(u.periode_label, u);
+          });
+          uploadHistory = [...seenP.values()].map(mapU);
         }
       }
 
-      await loadDebiturForUpload(allUploads[0], uploadHistory);
+      await loadDebiturForUpload(allUploads[0], uploadHistory, uploadHistoryAll);
     } catch (err) {
       console.error('Gagal load data dari database:', err);
     } finally {
@@ -2902,14 +4729,165 @@ export default function App() {
     }
   };
 
+  const loadCkpnData = async () => {
+    try {
+      const { data: uploads } = await fetchUploads({ jenis: 'ckpn', order: 'desc' });
+      if (!uploads?.length) return;
+      const [{ data: summary }, { data: trend }] = await Promise.all([
+        fetchCkpnSummary(uploads[0].id),
+        fetchCkpnTrend(),
+      ]);
+      if (!summary) return;
+      setCkpnData({ uploadId: uploads[0].id, periodeLabel: uploads[0].periode_label, ...summary, trend: trend || [] });
+    } catch (err) { console.warn('Gagal load CKPN data:', err); }
+  };
+
+  const loadRecPhData = async () => {
+    try {
+      const { data: uploads } = await fetchUploads({ jenis: 'rec_ph', order: 'desc' });
+      if (!uploads?.length) return;
+      const [{ data: summary }, { data: trend }] = await Promise.all([
+        fetchRecPhSummary(uploads[0].id),
+        fetchRecPhTrend(),
+      ]);
+      if (!summary) return;
+      setRecPhData({ uploadId: uploads[0].id, periodeLabel: uploads[0].periode_label, ...summary, trend: trend || [] });
+    } catch (err) { console.warn('Gagal load Recovery PH data:', err); }
+  };
+
+  const loadActionPlans = async () => {
+    try { const { data } = await fetchActionPlans(); if (data) setActionPlansData(data); }
+    catch (err) { console.warn('Gagal load Action Plan:', err); }
+  };
+
+  // Muat snapshot agregat per-mantri untuk laporan Data Mantri.
+  // Pilih tanggal acuan dari upload LW321 yang BENAR-BENAR ADA: terkini, kemarin (H-1),
+  // akhir bulan lalu, akhir tahun lalu — lalu ambil agregat SQL per snapshot.
+  const loadMantriSnaps = async () => {
+    try {
+      const { data: ups } = await fetchUploads({ fields: 'id,tgl_file,periode_label', jenis: 'lw321', order: 'desc' });
+      if (!ups?.length) { setMantriSnaps([]); return; }
+      const seen = new Set(); const byDate = [];
+      ups.forEach(u => { const d = String(u.tgl_file).slice(0,10); if (!seen.has(d)) { seen.add(d); byDate.push({ ...u, d }); } });
+      const terkini = byDate[0];
+      const tDate = new Date(terkini.d);
+      const kemarin   = byDate.find(u => u.d < terkini.d);
+      const bulanLalu = byDate.find(u => { const dt = new Date(u.d); return dt.getFullYear() < tDate.getFullYear() || dt.getMonth() < tDate.getMonth(); });
+      const akhirThn  = byDate.find(u => new Date(u.d).getFullYear() < tDate.getFullYear());
+      const fmt = (d) => { const [y,mo,da] = d.split('-'); return `${da}/${mo}/${y}`; };
+      const refDefs = [
+        akhirThn  && { key:'akhirThn',  id:akhirThn.id,  d:akhirThn.d },
+        bulanLalu && { key:'bulanLalu', id:bulanLalu.id, d:bulanLalu.d },
+        kemarin   && { key:'kemarin',   id:kemarin.id,   d:kemarin.d },
+        { key:'terkini', id:terkini.id, d:terkini.d },
+      ].filter(Boolean).filter((r,i,arr) => arr.findIndex(x=>x.id===r.id)===i);
+      // Ambil agregat tiap snapshot (sekali per upload_id)
+      const aggById = {};
+      await Promise.all([...new Set(refDefs.map(r=>r.id))].map(async id => {
+        const { data } = await fetchMantriAgg(id);
+        const map = {}; (data||[]).forEach(row => { map[`${row.kode_uker}|${row.ao_id}`] = row; });
+        aggById[id] = map;
+      }));
+      setMantriSnaps(refDefs.map(r => ({ key:r.key, label:fmt(r.d), date:r.d, byMantri:aggById[r.id] || {} })));
+    } catch (err) { console.warn('Gagal load snapshot mantri:', err); setMantriSnaps([]); }
+  };
+  // Muat lazy saat pertama masuk salah satu tab Data Mantri
+  useEffect(() => {
+    if (mantriSnaps === null && typeof page === "string" && page.startsWith("mantri")) loadMantriSnaps();
+  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Refresh action plan tiap kali masuk halaman Kinerja RM/Mantri (agar ikut input terbaru)
+  useEffect(() => {
+    if (page !== "kinerjaAO") return;
+    fetchActionPlans().then(({ data }) => { if (data) setActionPlansData(data); }).catch(()=>{});
+  }, [page]);
+
+  const CHUNK = 300;
+
+  const handleUploadCkpn = async (file, fileTanggal, onProgress) => {
+    onProgress?.(5, "Parsing file CKPN...");
+    const result = await parseCKPN(file);
+    onProgress?.(20, `${result.totalRows.toLocaleString("id-ID")} baris terbaca`);
+
+    const { data: upload, error } = await insertUpload({
+      jenis: 'ckpn', tgl_file: fileTanggal,
+      periode_label: result.periodeLabel || fileTanggal.slice(0, 7),
+      row_count: result.totalRows, uploaded_by: currentUser?.pn || 'admin',
+    });
+    if (error || !upload) throw new Error(error?.message || 'Gagal menyimpan upload');
+    onProgress?.(28, "Menyimpan ke database...");
+
+    const total = result.debitur.length;
+    for (let i = 0; i < total; i += CHUNK) {
+      const chunk = result.debitur.slice(i, i + CHUNK).map(d => ({ upload_id: upload.id, ...d }));
+      const { error: bulkErr } = await bulkInsertCkpn(chunk);
+      if (bulkErr) throw new Error(bulkErr.message);
+      onProgress?.(28 + Math.round(Math.min(i + CHUNK, total) / total * 68), `Menyimpan ${Math.min(i+CHUNK,total)} dari ${total}...`);
+    }
+
+    const M = 1_000_000;
+    const computeByKol = (deb) => {
+      const map = {};
+      deb.forEach(d => {
+        const k = String(d.kol);
+        if (!map[k]) map[k] = { kol: parseInt(k), totalJt: 0, count: 0 };
+        map[k].totalJt += d.ckpn_berjalan / M;
+        map[k].count++;
+      });
+      return Object.values(map).sort((a, b) => a.kol - b.kol);
+    };
+    const computeBySegmen = (deb) => {
+      const map = {};
+      deb.forEach(d => {
+        const s = d.segmentasi || 'Lainnya';
+        if (!map[s]) map[s] = { segmen: s, totalJt: 0, count: 0 };
+        map[s].totalJt += d.ckpn_berjalan / M;
+        map[s].count++;
+      });
+      return Object.values(map).sort((a, b) => b.totalJt - a.totalJt);
+    };
+
+    onProgress?.(98, "Memuat data dashboard...");
+    await loadCkpnData();
+    onProgress?.(100, "Selesai!");
+  };
+
+  const handleUploadRecPh = async (file, fileTanggal, onProgress) => {
+    onProgress?.(5, "Parsing file Recovery PH...");
+    const result = await parseRecoveryPH(file);
+    onProgress?.(20, `${result.totalRows.toLocaleString("id-ID")} baris terbaca`);
+
+    const MONTH_ID_LABEL = { jan:'Jan',feb:'Feb',mar:'Mar',apr:'Apr',mei:'Mei',jun:'Jun',jul:'Jul',agu:'Agu',sep:'Sep',okt:'Okt',nov:'Nov',des:'Des' };
+    const periodeLabel = result.latestMonth ? `${MONTH_ID_LABEL[result.latestMonth]||result.latestMonth} ${new Date().getFullYear()}` : fileTanggal.slice(0, 7);
+
+    const { data: upload, error } = await insertUpload({
+      jenis: 'rec_ph', tgl_file: fileTanggal,
+      periode_label: periodeLabel,
+      row_count: result.totalRows, uploaded_by: currentUser?.pn || 'admin',
+    });
+    if (error || !upload) throw new Error(error?.message || 'Gagal menyimpan upload');
+    onProgress?.(28, "Menyimpan ke database...");
+
+    const total = result.debitur.length;
+    for (let i = 0; i < total; i += CHUNK) {
+      const chunk = result.debitur.slice(i, i + CHUNK).map(d => ({ upload_id: upload.id, ...d }));
+      const { error: bulkErr } = await bulkInsertRecPh(chunk);
+      if (bulkErr) throw new Error(bulkErr.message);
+      onProgress?.(28 + Math.round(Math.min(i + CHUNK, total) / total * 68), `Menyimpan ${Math.min(i+CHUNK,total)} dari ${total}...`);
+    }
+
+    onProgress?.(98, "Memuat data dashboard...");
+    await loadRecPhData();
+    onProgress?.(100, "Selesai!");
+  };
+
   const switchPeriode = async (upload) => {
     if (upload.periode_label === uploadedData?.periodeLabel) { setPeriodeOpen(false); return; }
     setPeriodeOpen(false);
     setDbLoading(true); setDbProgress(0);
     try {
-      // Pakai uploadHistory yang sudah ada di state saat ini
-      const uploadHistory = uploadedData?.uploadHistory || [];
-      await loadDebiturForUpload(upload, uploadHistory);
+      const uploadHistory    = uploadedData?.uploadHistory    || [];
+      const uploadHistoryAll = uploadedData?.uploadHistoryAll || [];
+      await loadDebiturForUpload(upload, uploadHistory, uploadHistoryAll);
     } catch (err) {
       console.error('Gagal ganti periode:', err);
     } finally {
@@ -2926,7 +4904,8 @@ export default function App() {
     try {
       onProgress?.(8, "Menyimpan metadata upload...");
       const totalOsJt = result.debitur.reduce((s,d)=>s+d.osJt, 0);
-      const totalTunggakanJt = result.debitur.filter(d=>d.dpd>0).reduce((s,d)=>s+d.osJt, 0);
+      const totalTunggakanJt = result.debitur.reduce((s,d)=>s+(d.tunggakanTotal||0), 0);
+      // Catatan: CKPN TIDAK dihitung/disimpan dari LW321 — CKPN punya file sendiri (jenis 'ckpn').
       const basePayload = {
         jenis: 'lw321',
         tgl_file: tglData || new Date().toISOString().split('T')[0],
@@ -2936,15 +4915,8 @@ export default function App() {
         row_count: result.totalRows,
         uploaded_by: currentUser?.pn || 'admin',
       };
-      let { data: upload, error: upErr } = await supabase
-        .from('uploads').insert({ ...basePayload, total_os_jt: totalOsJt, total_tunggakan_jt: totalTunggakanJt })
-        .select().single();
-      // Fallback: kolom total_* belum dibuat — insert tanpa kolom tersebut
-      if (upErr?.message?.includes('total_os_jt') || upErr?.message?.includes('total_tunggakan_jt')) {
-        const retry = await supabase.from('uploads').insert(basePayload).select().single();
-        upload = retry.data; upErr = retry.error;
-      }
-      if (upErr) throw upErr;
+      const { data: upload, error: upErr } = await insertUpload({ ...basePayload, total_os_jt: totalOsJt, total_tunggakan_jt: totalTunggakanJt });
+      if (upErr) throw new Error(upErr.message);
 
       const CHUNK = 500;
       const total = result.debitur.length;
@@ -2954,7 +4926,8 @@ export default function App() {
           cif: d.cif, nama: d.nama, ao: d.ao, ao_id: d.aoId, pn: d.pn,
           kode_uker: d.uker, uker_nama: d.ukerNama, segment: d.segment,
           sektor: d.sektor, os_jt: d.osJt, kol: d.kol, dpd: d.dpd,
-          skor: d.skor, tier: d.tier, has_action: d.hasAction, resolved: d.resolved,
+          skor: d.skor, tier: d.tier, flag_restruk: d.flagRestruk || 'N',
+          has_action: d.hasAction, resolved: d.resolved,
           tunggakan_pokok: d.tunggakanPokok, tunggakan_bunga: d.tunggakanBunga,
           tunggakan_denda: d.tunggakanDenda, tunggakan_penalty: d.tunggakanPenalty,
           tunggakan_total: d.tunggakanTotal,
@@ -2962,21 +4935,9 @@ export default function App() {
         if (withPlafon) r.plafon_jt = d.plafonJt ?? null;
         return r;
       };
-      // Deteksi otomatis: coba chunk pertama dengan plafon_jt
-      let withPlafon = true;
-      let startAt = 0;
-      const firstErr = (await supabase.from('debitur').insert(result.debitur.slice(0, CHUNK).map(d => mkRow(d, true)))).error;
-      if (firstErr) {
-        if (firstErr.message?.includes('plafon_jt')) {
-          withPlafon = false; // kolom belum ada, insert tanpa plafon_jt mulai dari awal
-        } else throw firstErr;
-      } else {
-        startAt = CHUNK;
-        onProgress?.(10 + Math.round(Math.min(CHUNK, total) / total * 88), `Menyimpan ${Math.min(CHUNK, total).toLocaleString("id-ID")} dari ${total.toLocaleString("id-ID")} debitur...`);
-      }
-      for (let i = startAt; i < total; i += CHUNK) {
-        const { error } = await supabase.from('debitur').insert(result.debitur.slice(i, i + CHUNK).map(d => mkRow(d, withPlafon)));
-        if (error) throw error;
+      for (let i = 0; i < total; i += CHUNK) {
+        const { error } = await bulkInsertDebitur(result.debitur.slice(i, i + CHUNK).map(d => mkRow(d, true)));
+        if (error) throw new Error(error.message);
         const saved = Math.min(i + CHUNK, total);
         onProgress?.(10 + Math.round(saved / total * 88), `Menyimpan ${saved.toLocaleString("id-ID")} dari ${total.toLocaleString("id-ID")} debitur...`);
       }
@@ -3004,7 +4965,7 @@ export default function App() {
         && (filters.segment==="semua" || d.segment===filters.segment);
     });
   }, [filters, perms, sourceDebitur, currentUser]);
-  const m = useMemo(()=>buildModel(list, filters.periode, uploadedData?.uploadHistory), [list, filters.periode, uploadedData?.uploadHistory]);
+  const m = useMemo(()=>buildModel(list, filters.periode, uploadedData?.uploadHistory, uploadedData?.uploadHistoryAll), [list, filters.periode, uploadedData?.uploadHistory, uploadedData?.uploadHistoryAll]);
 
   const handleLogin = (user) => {
     setCurrentUser(user); setRole(user.role); setPage("dashboard"); setProfileOpen(false);
@@ -3013,8 +4974,11 @@ export default function App() {
     else if (user.uker)           setFilters({ uker:user.uker, ao:"semua", segment:"semua", periode:"Jun 2026" });
     else                          setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Jun 2026" });
     loadLatestData();
+    loadCkpnData();
+    loadRecPhData();
+    loadActionPlans();
   };
-  const handleLogout = () => { setCurrentUser(null); setRole(null); setPage("dashboard"); setProfileOpen(false); setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" }); };
+  const handleLogout = () => { setCurrentUser(null); setRole(null); setPage("dashboard"); setProfileOpen(false); setCkpnData(null); setRecPhData(null); setMantriSnaps(null); setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" }); };
 
   if (!perms) return <Login onLogin={handleLogin} localUsers={localUsers} />;
 
@@ -3037,25 +5001,48 @@ export default function App() {
   const cur = MENU.find(x=>x.id===safePage);
   const sub = cur.sub.replace("__DATE__", m.P.date);
   const DashboardComp = role==="ao" ? DashboardAO : role==="collection" ? DashboardCollection : role==="kepalaUnit" ? DashboardKepalaUnit : DashboardPinca;
+  // Navigasi ke Daftar Debitur dengan filter awal (mis. dari klik chart sektor/segmen di Portfolio)
+  const goDebitur = (preset) => { if (!perms.menus.includes("debitur")) return; setDebiturPreset(preset || null); setPage("debitur"); };
+  // Deep-link dari Dashboard: klik nama debitur → Kinerja Unit (unit → mantri → debitur, breakdown terbuka)
+  const goKinerjaDebitur = (d) => { if (!d || !perms.menus.includes("kinerjaUnit")) return; setKinerjaPreset({ uker:d.uker, aoId:d.aoId, cif:d.cif }); setPage("kinerjaUnit"); };
+  // Ekspor tampilan halaman (dashboard/portfolio) jadi PDF — untuk dibagikan Pinca ke grup
+  const handleExportPDF = async () => {
+    if (!contentRef.current || pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      const fn = `${cur.title.replace(/[^\w]+/g,"_")}_${(m.P.date||"").replace(/\s+/g,"")}.pdf`;
+      await exportDomToPDF(contentRef.current, fn, "portrait");
+    } catch (e) { console.error("Gagal membuat PDF:", e); window.alert("Gagal membuat PDF: " + (e?.message || e)); }
+    finally { setPdfBusy(false); }
+  };
   const pages = {
-    dashboard:   <DashboardComp m={m} go={(p)=>perms.menus.includes(p)&&setPage(p)} perms={perms} />,
-    portfolio:   <PortfolioStatus m={m} />,
+    dashboard:   <DashboardComp m={m} go={(p)=>perms.menus.includes(p)&&setPage(p)} goKinerjaDebitur={goKinerjaDebitur} perms={perms} ckpnData={ckpnData} recPhData={recPhData} />,
+    portfolio:   <PortfolioStatus m={m} ckpnData={ckpnData} goDebitur={goDebitur} />,
     ews:         <EarlyWarning m={m} />,
-    debitur:     <DaftarDebitur list={list} />,
-    action:      <ActionPlan m={m} perms={perms} />,
+    debitur:     <DaftarDebitur list={list} preset={debiturPreset} />,
+    action:      <ActionPlan m={m} perms={perms} list={list} />,
     ckpn:        <SimulasiCKPN m={m} />,
-    kinerjaAO:   <KinerjaAO m={m} />,
-    kinerjaUnit: <KinerjaUnit m={m} list={list} />,
-    osKurang50:  <OsKurang50 list={list} />,
+    kinerjaAO:   <KinerjaAO m={m} list={list} plans={actionPlansData} goKinerjaDebitur={goKinerjaDebitur} />,
+    kinerjaUnit: <KinerjaUnit m={m} list={list} preset={kinerjaPreset} />,
+    osKurang50:  <OsKurang50 list={list} m={m} />,
+    buatLaporan: <BuatLaporan list={list} />,
+    mantriRealisasi: <MantriReport reportId="mantriRealisasi" snaps={mantriSnaps} />,
+    mantriOs:        <MantriReport reportId="mantriOs" snaps={mantriSnaps} />,
+    mantriSmlRp:     <MantriReport reportId="mantriSmlRp" snaps={mantriSnaps} />,
+    mantriNplRp:     <MantriReport reportId="mantriNplRp" snaps={mantriSnaps} />,
+    mantriSmlPct:    <MantriReport reportId="mantriSmlPct" snaps={mantriSnaps} />,
+    mantriNplPct:    <MantriReport reportId="mantriNplPct" snaps={mantriSnaps} />,
+    mantriNetDgSml:  <MantriReport reportId="mantriNetDgSml" snaps={mantriSnaps} />,
+    mantriNetDgNpl:  <MantriReport reportId="mantriNetDgNpl" snaps={mantriSnaps} />,
     laporan:     <Laporan m={m} list={list} perms={perms} />,
-    manajemen:   <ManajemenUser localUsers={localUsers} setLocalUsers={setLocalUsers} />,
-    pengaturan:  <Pengaturan perms={perms} onUpload={handleUploadFile} uploadedData={uploadedData} onReset={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Jun 2026"})); }} onDataChanged={loadLatestData} />,
+    manajemen:   <ManajemenUser localUsers={localUsers} setLocalUsers={setLocalUsers} currentUser={currentUser} />,
+    pengaturan:  <Pengaturan perms={perms} onUpload={handleUploadFile} uploadedData={uploadedData} onReset={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Jun 2026"})); }} onDataChanged={async()=>{ setMantriSnaps(null); await loadLatestData(); }} onUploadCkpn={handleUploadCkpn} onUploadRecPh={handleUploadRecPh} />,
   };
   const aktifFilter = perms.scope==="all" && (filters.uker!=="semua" || filters.segment!=="semua" || filters.ao!=="semua");
 
   return (
     <div style={{ display:"flex", height:"100vh", fontFamily:"system-ui,'Segoe UI',Roboto,sans-serif", background:C.bg, color:C.text }}>
-      <Sidebar page={safePage} setPage={setPage} menus={menus} periode={filters.periode} />
+      <Sidebar page={safePage} setPage={(p)=>{ setDebiturPreset(null); setKinerjaPreset(null); setPage(p); }} menus={menus} periode={filters.periode} />
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
         <header style={{ background:C.white, borderBottom:`1px solid ${C.border}`, padding:"12px 22px", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0, gap:12 }}>
           <div style={{ minWidth:0 }}>
@@ -3069,6 +5056,12 @@ export default function App() {
             </div>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+            {["dashboard","portfolio"].includes(safePage) && (
+              <button onClick={handleExportPDF} disabled={pdfBusy} title="Unduh tampilan ini sebagai PDF"
+                style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 12px", border:`1px solid ${C.border}`, borderRadius:7, background:pdfBusy?C.grayLt:C.white, color:C.textMd, fontSize:12.5, cursor:pdfBusy?"wait":"pointer" }}>
+                <Ic n="download" size={15} /> {pdfBusy ? "Membuat PDF…" : "Unduh PDF"}
+              </button>
+            )}
             <button onClick={()=>setInfoOpen(true)} style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 12px", border:`1px solid ${C.border}`, borderRadius:7, background:C.white, color:C.textMd, fontSize:12.5, cursor:"pointer" }}><Ic n="infoDoc" size={15} /> Info Data</button>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span style={{ fontSize:12.5, color:C.gray }}>Periode</span>
@@ -3160,9 +5153,19 @@ export default function App() {
           </div>
         </header>
         <main style={{ flex:1, overflowY:"auto", background:C.bg, padding:16 }} onClick={()=>profileOpen&&setProfileOpen(false)}>
-          {pages[safePage]}
+          <div ref={contentRef}>{pages[safePage]}</div>
         </main>
       </div>
+
+      {/* Watermark / kredit pembuat — klik buka portfolio di tab baru */}
+      <a href="https://mfaridsyam.vercel.app" target="_blank" rel="noopener noreferrer" title="Portfolio — Muhammad Farid Syam"
+        style={{ position:"fixed", right:14, bottom:12, zIndex:90, fontSize:11, fontWeight:700, color:"rgba(15,42,80,.5)",
+          background:"rgba(255,255,255,.72)", border:"1px solid rgba(15,42,80,.14)", borderRadius:20, padding:"4px 12px",
+          textDecoration:"none", boxShadow:"0 2px 8px rgba(0,0,0,.08)", display:"flex", alignItems:"center", gap:6, letterSpacing:.2 }}
+        onMouseEnter={e=>{ e.currentTarget.style.color="rgba(15,42,80,.95)"; e.currentTarget.style.background="rgba(255,255,255,.95)"; }}
+        onMouseLeave={e=>{ e.currentTarget.style.color="rgba(15,42,80,.5)"; e.currentTarget.style.background="rgba(255,255,255,.72)"; }}>
+        <span style={{ fontSize:9 }}>◆</span> mfaridsyam.vercel.app
+      </a>
 
       {infoOpen && (
         <div onClick={()=>setInfoOpen(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.45)", zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>

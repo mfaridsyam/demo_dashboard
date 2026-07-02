@@ -1,4 +1,4 @@
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx-js-style';
 
 const HEADER_ROW = 3; // row 4 di Excel (0-indexed)
 
@@ -101,11 +101,21 @@ export function parseLW321(file) {
           mantri:           idx('PN PENGELOLA 1'),
           balance:          idx('BALANCE DALAM IDR'),
           plafon:           idx('PLAFON DALAM IDR'),
+          flagRestruk:      idx('FLAG RESTRUK'),
+          kolLancar:        idx('KOLEKTIBILITAS LANCAR'),
+          kolDpk:           idx('KOLEKTIBILITAS DPK'),
+          kolKurangLancar:  idx('KOLEKTIBILITAS KURANG LANCAR'),
+          kolDiragukan:     idx('KOLEKTIBILITAS DIRAGUKAN'),
+          kolMacet:         idx('KOLEKTIBILITAS MACET'),
         };
 
-        // Validasi kolom wajib
-        const missing = Object.entries(I).filter(([k,v]) => v === -1 && ['nama','cif','kolAdk','balance','kodeUker'].includes(k)).map(([k]) => k);
+        // Validasi kolom wajib (balance hanya fallback — tidak wajib bila kolom kol* ada)
+        const missing = Object.entries(I).filter(([k,v]) => v === -1 && ['nama','cif','kolAdk','kodeUker'].includes(k)).map(([k]) => k);
         if (missing.length > 0) throw new Error(`Kolom tidak ditemukan: ${missing.join(', ')}`);
+
+        // Apakah file punya kolom kolektibilitas (W–AA)? Bila ya, OS = jumlah 5 kolom itu (acuan total
+        // outstanding). Bila tidak (file lama), baru fallback ke BALANCE DALAM IDR.
+        const hasKolCols = [I.kolLancar, I.kolDpk, I.kolKurangLancar, I.kolDiragukan, I.kolMacet].some(v => v >= 0);
 
         const debitur = [];
         const ukerMap = {};
@@ -118,7 +128,15 @@ export function parseLW321(file) {
           const row = rows[i];
           if (!row || !row[I.nama]) continue;
 
-          const balanceIDR = parseFloat(row[I.balance]) || 0;
+          // OS = total outstanding = jumlah 5 kolom kolektibilitas (LANCAR+DPK+KURANG LANCAR+DIRAGUKAN+MACET).
+          const sumKol =
+            (I.kolLancar       >= 0 ? parseFloat(row[I.kolLancar])       || 0 : 0) +
+            (I.kolDpk          >= 0 ? parseFloat(row[I.kolDpk])          || 0 : 0) +
+            (I.kolKurangLancar >= 0 ? parseFloat(row[I.kolKurangLancar]) || 0 : 0) +
+            (I.kolDiragukan    >= 0 ? parseFloat(row[I.kolDiragukan])    || 0 : 0) +
+            (I.kolMacet        >= 0 ? parseFloat(row[I.kolMacet])        || 0 : 0);
+          // Kolom kol* ada → pakai jumlahnya apa adanya (acuan). Tidak ada → fallback BALANCE DALAM IDR.
+          const balanceIDR = hasKolCols ? sumKol : (parseFloat(row[I.balance]) || 0);
           if (balanceIDR <= 0) continue;
 
           // Periode dari baris pertama data
@@ -138,7 +156,10 @@ export function parseLW321(file) {
           }
 
           const tglMenunggak = row[I.tglMenunggak];
-          const dpd = calcDPD(periodeDate, tglMenunggak);
+          const kolAdkRaw = parseInt(row[I.kolAdk]) || 1;
+          // Kol 1 = lancar → DPD 0. Kol lain: DPD = periode − TGL_MENUNGGAK, apa adanya (tanpa cap).
+          // Bila TGL_MENUNGGAK kosong/tak terbaca di file, calcDPD mengembalikan 0 (setia ke file).
+          const dpd = kolAdkRaw === 1 ? 0 : calcDPD(periodeDate, tglMenunggak);
           const kol = mapKol(row[I.kolAdk], dpd);
           const tier = mapTier(kol);
 
@@ -163,6 +184,10 @@ export function parseLW321(file) {
           const tDenda   = Math.round(tPokok * 0.02 * months); // tidak ada di file, tetap estimasi
           const tPenalty = tunggakanPinaltiIdr > 0 ? Math.round(tunggakanPinaltiIdr / 1_000_000) : (dpd > 90 ? Math.round(tPokok * 0.01) : 0);
 
+          const flagRestruk = I.flagRestruk >= 0
+            ? String(row[I.flagRestruk] || 'N').trim().toUpperCase().startsWith('Y') ? 'Y' : 'N'
+            : 'N';
+
           debitur.push({
             cif:      String(row[I.cif] || '').trim(),
             nama:     String(row[I.nama] || '').trim(),
@@ -178,7 +203,8 @@ export function parseLW321(file) {
             dpd,
             skor:     calcSkor(dpd),
             tier,
-            hasAction: tier !== 'rendah',
+            flagRestruk,
+            hasAction: tier !== 'rendah' || flagRestruk === 'Y',
             resolved:  false,
             tunggakanPokok:   tPokok,
             tunggakanBunga:   tBunga,
