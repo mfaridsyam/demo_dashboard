@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { parseLW321 } from "./lw321Parser.js";
 import { parseCKPN } from "./ckpnParser.js";
 import { parseRecoveryPH } from "./recoveryPhParser.js";
-import { fetchUploads, insertUpload, deleteUpload, fetchDebitur, bulkInsertDebitur, fetchActionPlans, saveActionPlan, updateActionPlan, deleteActionPlan, fetchCkpnSummary, bulkInsertCkpn, fetchRecPhSummary, bulkInsertRecPh, fetchCkpnTrend, fetchRecPhTrend, fetchMantriAgg, fetchMantriAggCross, fetchAuthMe } from "./apiClient.js";
+import { fetchUploads, insertUpload, deleteUpload, fetchDebitur, bulkInsertDebitur, fetchActionPlans, saveActionPlan, updateActionPlan, deleteActionPlan, fetchCkpnSummary, bulkInsertCkpn, fetchRecPhSummary, bulkInsertRecPh, fetchCkpnTrend, fetchRecPhTrend, fetchMantriAgg, fetchMantriAggCross, fetchAuthMe, fetchUsers, createUser, updateUser } from "./apiClient.js";
 import { supabase } from "./supabaseClient.js";
 // Satu SheetJS saja: xlsx-js-style (superset xlsx + dukung styling). Mengimpor 'xlsx' juga akan
 // menimbulkan konflik global XLSX yang membuat style hilang saat di-bundle.
@@ -123,15 +123,6 @@ const ROLES = {
     scope:"all",         editAction:true,  editData:true,  exportReport:true,  menus:ALL_MENUS },
 };
 
-const DEMO_KU_UKER  = "5032";
-const SUPERADMIN_ID = "u-it-1"; // ID tetap, tidak bisa diubah siapapun
-const USERS = [
-  { id:"u-it-1",  pn:"90188658", nama:"Muhammad Farid Syam",   username:"farid.syam",      password:"demo123", role:"superadmin", uker:null,         aoId:null, aktif:true },
-  { id:"u-it-2",  pn:"00387188", nama:"Deni Suhardiman",       username:"deni.suhardiman", password:"demo123", role:"admin",      uker:null,         aoId:null, aktif:true },
-  { id:"u-pinca", pn:"56848",    nama:"Hery Santoso",          username:"hery.santoso",    password:"demo123", role:"pinca",      uker:null,         aoId:null, aktif:true },
-  { id:"u-mb",    pn:"79028",    nama:"A. Achmad Rizal",       username:"achmad.rizal",    password:"demo123", role:"mb",         uker:null,         aoId:null, aktif:true },
-  { id:"u-ku",    pn:"176363",   nama:"Syamsuddin",            username:"syamsuddin",      password:"demo123", role:"kepalaUnit", uker:DEMO_KU_UKER, aoId:null, aktif:true },
-];
 
 const PERIODE = {
   "Mei 2026": { f:1.00, date:"31 Mei 2026", months:["Des '25","Jan '26","Feb '26","Mar '26","Apr '26","Mei '26"], months12:["Jun '25","Jul '25","Agu '25","Sep '25","Okt '25","Nov '25","Des '25","Jan '26","Feb '26","Mar '26","Apr '26","Mei '26"] },
@@ -3613,12 +3604,23 @@ function Pengaturan({ perms, onUpload, onReset, onDataChanged, onUploadCkpn, onU
   );
 }
 
-function ManajemenUser({ localUsers, setLocalUsers, currentUser }) {
+function ManajemenUser({ currentUser }) {
+  const [users,   setUsers]   = useState(null); // null = memuat
+  const [loadErr, setLoadErr] = useState("");
   const [formOpen, setFormOpen]  = useState(false);
   const [editId,   setEditId]    = useState(null);
   const emptyForm = { nama:"", pn:"", username:"", password:"", role:"mb", uker:"", aoId:"", aktif:true };
   const [form, setForm] = useState(emptyForm);
   const [err,  setErr]  = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    setLoadErr("");
+    const { data, error } = await fetchUsers();
+    if (error) { setLoadErr(error.message || "Gagal memuat daftar user"); setUsers([]); return; }
+    setUsers(data || []);
+  };
+  useEffect(() => { load(); }, []);
 
   const isSuperAdmin = currentUser?.role === "superadmin";
 
@@ -3639,12 +3641,8 @@ function ManajemenUser({ localUsers, setLocalUsers, currentUser }) {
   const ROLE_COLOR = { pinca:C.kpiBlue, mb:C.kpiPurple, kepalaUnit:C.kpiTeal, admin:C.gray, superadmin:"#92400E" };
   const ROLE_LABEL = { pinca:"Pimpinan Cabang", mb:"Manajer Bisnis", kepalaUnit:"Kepala Unit", admin:"Admin IT", superadmin:"Super Admin IT" };
 
-  // Cek apakah akun ini dilindungi (tidak bisa disentuh oleh role saat ini)
-  const isProtected = (u) => {
-    if (u.role === "superadmin") return true;            // superadmin tidak bisa disentuh siapapun
-    if (!isSuperAdmin && u.role === "admin") return true; // admin IT tidak bisa sentuh admin IT lain
-    return false;
-  };
+  // Akun dilindungi (tidak bisa disentuh role saat ini)
+  const isProtected = (u) => u.role === "superadmin" || (!isSuperAdmin && u.role === "admin");
 
   const autoUser = (nama) => {
     const p = nama.trim().toLowerCase().split(/\s+/);
@@ -3656,28 +3654,39 @@ function ManajemenUser({ localUsers, setLocalUsers, currentUser }) {
   const openNew  = () => { setEditId(null); setForm(emptyForm); setErr(""); setFormOpen(true); };
   const openEdit = (u) => {
     if (isProtected(u)) return;
-    setEditId(u.id); setForm({ nama:u.nama, pn:u.pn||"", username:u.username, password:u.password, role:u.role, uker:u.uker||"", aoId:u.aoId||"", aktif:u.aktif }); setErr(""); setFormOpen(true);
+    setEditId(u.id);
+    setForm({ nama:u.nama, pn:u.pn||"", username:u.username, password:"", role:u.role, uker:u.uker||"", aoId:u.ao_id||"", aktif:!!u.aktif });
+    setErr(""); setFormOpen(true);
   };
-  const cancel   = () => { setFormOpen(false); setEditId(null); setErr(""); };
-  const toggle   = (id) => {
-    const u = localUsers.find(x => x.id === id);
-    if (!u || isProtected(u)) return;
-    setLocalUsers(prev => prev.map(x => x.id===id ? { ...x, aktif:!x.aktif } : x));
+  const cancel = () => { setFormOpen(false); setEditId(null); setErr(""); };
+
+  const toggle = async (u) => {
+    if (isProtected(u) || busy) return;
+    setBusy(true); setLoadErr("");
+    const { data, error } = await updateUser(u.id, { aktif: u.aktif ? 0 : 1 });
+    setBusy(false);
+    if (error) { setLoadErr(error.message || "Gagal mengubah status akun"); return; }
+    if (data) setUsers(prev => (prev||[]).map(x => x.id===u.id ? data : x));
   };
 
-  const save = () => {
-    if (!form.nama.trim() || !form.username.trim() || !form.password.trim()) { setErr("Nama, username, dan password wajib diisi."); return; }
+  const save = async () => {
+    if (busy) return;
+    if (!form.nama.trim() || !form.pn.trim() || !form.username.trim()) { setErr("Nama, PN, dan username wajib diisi."); return; }
+    if (!editId && !form.password.trim()) { setErr("Password wajib diisi untuk akun baru."); return; }
     if (needUker && !form.uker) { setErr("Pilih unit kerja terlebih dahulu."); return; }
-    const dupUser = localUsers.find(u => u.username === form.username.trim() && u.id !== editId);
-    if (dupUser) { setErr("Username sudah dipakai oleh akun lain."); return; }
+    setBusy(true); setErr("");
     if (editId) {
-      setLocalUsers(prev => prev.map(u => u.id===editId ? { ...u, ...form, uker:needUker?form.uker:null, aoId:null } : u));
+      const patch = { nama:form.nama.trim(), role:form.role, uker:needUker?form.uker:null, ao_id:null, aktif:form.aktif?1:0 };
+      if (form.password.trim()) patch.password = form.password.trim();
+      const { data, error } = await updateUser(editId, patch);
+      setBusy(false);
+      if (error) { setErr(error.message || "Gagal menyimpan perubahan."); return; }
+      if (data) setUsers(prev => (prev||[]).map(u => u.id===editId ? data : u));
     } else {
-      setLocalUsers(prev => [...prev, {
-        id: `u-new-${Date.now()}`, pn:form.pn, nama:form.nama.trim(),
-        username:form.username.trim(), password:form.password,
-        role:form.role, uker:needUker?form.uker:null, aoId:null, aktif:form.aktif
-      }]);
+      const { data, error } = await createUser({ pn:form.pn.trim(), nama:form.nama.trim(), username:form.username.trim(), password:form.password, role:form.role, uker:needUker?form.uker:null });
+      setBusy(false);
+      if (error) { setErr(error.message || "Gagal membuat akun."); return; }
+      if (data) setUsers(prev => [...(prev||[]), data]);
     }
     cancel();
   };
@@ -3690,8 +3699,11 @@ function ManajemenUser({ localUsers, setLocalUsers, currentUser }) {
       {/* Header bar */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
         <div style={{ fontSize:13, color:C.gray }}>
-          {localUsers.length} akun &nbsp;·&nbsp; <span style={{ color:C.green, fontWeight:600 }}>{localUsers.filter(u=>u.aktif).length} aktif</span>
-          {localUsers.filter(u=>!u.aktif).length > 0 && <span style={{ color:C.gray }}> &nbsp;·&nbsp; {localUsers.filter(u=>!u.aktif).length} nonaktif</span>}
+          {users === null ? "Memuat…" : <>
+            {users.length} akun &nbsp;·&nbsp; <span style={{ color:C.green, fontWeight:600 }}>{users.filter(u=>u.aktif).length} aktif</span>
+            {users.filter(u=>!u.aktif).length > 0 && <span style={{ color:C.gray }}> &nbsp;·&nbsp; {users.filter(u=>!u.aktif).length} nonaktif</span>}
+          </>}
+          {loadErr && <span style={{ color:C.red, marginLeft:10 }}>· {loadErr}</span>}
         </div>
         {!formOpen && (
           <button onClick={openNew}
@@ -3716,18 +3728,23 @@ function ManajemenUser({ localUsers, setLocalUsers, currentUser }) {
             </div>
             <div>
               <label style={lbl}>PN (Nomor Pegawai)</label>
-              <input style={inp} value={form.pn} onChange={e=>{ setForm(f=>({ ...f, pn:e.target.value })); setErr(""); }}
+              <input style={{ ...inp, ...(editId?{ background:C.grayLt, color:C.gray, cursor:"not-allowed" }:{}) }}
+                value={form.pn} disabled={!!editId}
+                onChange={e=>{ setForm(f=>({ ...f, pn:e.target.value.replace(/\s/g,"") })); setErr(""); }}
                 placeholder="contoh: 90188658" />
+              {editId && <div style={{ fontSize:10.5, color:C.gray, marginTop:3 }}>PN tak bisa diubah (dipakai untuk login)</div>}
             </div>
             <div>
               <label style={lbl}>Username</label>
-              <input style={inp} value={form.username} onChange={e=>{ setForm(f=>({ ...f, username:e.target.value })); setErr(""); }}
+              <input style={{ ...inp, ...(editId?{ background:C.grayLt, color:C.gray, cursor:"not-allowed" }:{}) }}
+                value={form.username} disabled={!!editId}
+                onChange={e=>{ setForm(f=>({ ...f, username:e.target.value })); setErr(""); }}
                 placeholder="contoh: budi.santoso" />
             </div>
             <div>
-              <label style={lbl}>Password</label>
+              <label style={lbl}>Password{editId && " (opsional)"}</label>
               <input style={inp} type="text" value={form.password} onChange={e=>{ setForm(f=>({ ...f, password:e.target.value })); setErr(""); }}
-                placeholder="min. 6 karakter" />
+                placeholder={editId ? "Kosongkan bila tidak diganti" : "min. 6 karakter"} />
             </div>
             <div>
               <label style={lbl}>Role</label>
@@ -3755,9 +3772,9 @@ function ManajemenUser({ localUsers, setLocalUsers, currentUser }) {
           </div>
           {err && <div style={{ marginTop:12, fontSize:12.5, color:C.red, background:C.redLt, padding:"8px 12px", borderRadius:7 }}>{err}</div>}
           <div style={{ display:"flex", gap:8, marginTop:18 }}>
-            <button onClick={save}
-              style={{ padding:"8px 20px", background:C.navy, color:"#fff", border:"none", borderRadius:8, fontSize:13, fontWeight:700, cursor:"pointer" }}>
-              {editId ? "Simpan Perubahan" : "Tambah Akun"}
+            <button onClick={save} disabled={busy}
+              style={{ padding:"8px 20px", background:C.navy, color:"#fff", border:"none", borderRadius:8, fontSize:13, fontWeight:700, cursor:busy?"default":"pointer", opacity:busy?.7:1 }}>
+              {busy ? "Menyimpan…" : (editId ? "Simpan Perubahan" : "Tambah Akun")}
             </button>
             <button onClick={cancel}
               style={{ padding:"8px 16px", background:C.grayLt, color:C.textMd, border:`1px solid ${C.border}`, borderRadius:8, fontSize:13, cursor:"pointer" }}>
@@ -3778,7 +3795,11 @@ function ManajemenUser({ localUsers, setLocalUsers, currentUser }) {
             </tr>
           </thead>
           <tbody>
-            {localUsers.map((u,i)=>{
+            {users === null ? (
+              <tr><td colSpan={7} style={{ padding:24, textAlign:"center", color:C.gray, fontSize:13 }}>Memuat user…</td></tr>
+            ) : users.length === 0 ? (
+              <tr><td colSpan={7} style={{ padding:24, textAlign:"center", color:C.gray, fontSize:13 }}>Belum ada user.</td></tr>
+            ) : users.map((u,i)=>{
               const roleColor = ROLE_COLOR[u.role] || C.gray;
               return (
                 <tr key={u.id} style={{ background:i%2===0?C.white:"#FAFBFD", borderBottom:`1px solid #F1F3F6`, opacity:u.aktif?1:.6 }}>
@@ -3811,8 +3832,8 @@ function ManajemenUser({ localUsers, setLocalUsers, currentUser }) {
                           style={{ padding:"5px 12px", fontSize:12, fontWeight:600, background:C.navyLt, color:C.navy, border:"none", borderRadius:6, cursor:"pointer" }}>
                           Edit
                         </button>
-                        <button onClick={()=>toggle(u.id)}
-                          style={{ padding:"5px 12px", fontSize:12, fontWeight:600, background:u.aktif?C.redLt:C.greenLt, color:u.aktif?C.red:C.green, border:"none", borderRadius:6, cursor:"pointer" }}>
+                        <button onClick={()=>toggle(u)} disabled={busy}
+                          style={{ padding:"5px 12px", fontSize:12, fontWeight:600, background:u.aktif?C.redLt:C.greenLt, color:u.aktif?C.red:C.green, border:"none", borderRadius:6, cursor:busy?"default":"pointer", opacity:busy?.6:1 }}>
                           {u.aktif?"Nonaktifkan":"Aktifkan"}
                         </button>
                       </div>
@@ -4596,7 +4617,6 @@ export default function App() {
   const [dbLoading, setDbLoading] = useState(false);
   const [dbProgress, setDbProgress] = useState(0);
   const [dbProgressLabel, setDbProgressLabel] = useState("");
-  const [localUsers, setLocalUsers] = useState(USERS);
   const [authChecking, setAuthChecking] = useState(Boolean(supabase)); // true saat memulihkan sesi awal
 
   // Fungsi inti: load debitur untuk upload tertentu (cek IDB cache dulu)
@@ -5040,7 +5060,7 @@ export default function App() {
     mantriNetDgSml:  <MantriReport reportId="mantriNetDgSml" snaps={mantriSnaps} />,
     mantriNetDgNpl:  <MantriReport reportId="mantriNetDgNpl" snaps={mantriSnaps} />,
     laporan:     <Laporan m={m} list={list} perms={perms} />,
-    manajemen:   <ManajemenUser localUsers={localUsers} setLocalUsers={setLocalUsers} currentUser={currentUser} />,
+    manajemen:   <ManajemenUser currentUser={currentUser} />,
     pengaturan:  <Pengaturan perms={perms} onUpload={handleUploadFile} uploadedData={uploadedData} onReset={()=>{ setUploadedData(null); setFilters(f=>({...f,periode:"Jun 2026"})); }} onDataChanged={async()=>{ setMantriSnaps(null); await loadLatestData(); }} onUploadCkpn={handleUploadCkpn} onUploadRecPh={handleUploadRecPh} />,
   };
   const aktifFilter = perms.scope==="all" && (filters.uker!=="semua" || filters.segment!=="semua" || filters.ao!=="semua");

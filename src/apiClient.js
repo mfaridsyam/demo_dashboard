@@ -99,6 +99,22 @@ export function fetchAuthMe() {
   return req('/api/auth/me');
 }
 
+// ── Manajemen user (superadmin / admin IT) ────────────────────────────────────
+
+export function fetchUsers() {
+  return req('/api/users');
+}
+
+// payload: { pn, nama, username, password, role, uker, ao_id }
+export function createUser(payload) {
+  return req('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+}
+
+// patch: { nama?, role?, uker?, ao_id?, aktif?, password? }
+export function updateUser(id, patch) {
+  return req(`/api/users/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+}
+
 // ── Action Plans ────────────────────────────────────────────────────────────
 
 export function fetchActionPlans() {
