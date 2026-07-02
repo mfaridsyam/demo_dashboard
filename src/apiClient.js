@@ -92,6 +92,13 @@ export function fetchMantriAggCross(terkini_id, ref_ids) {
   return req(`/api/mantri/agg-cross?terkini_id=${terkini_id}&ref_ids=${ref_ids.join(',')}`);
 }
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+// Profil user login (role, uker, pn, ...) dari tabel MySQL, dipetakan via supabase_uid.
+export function fetchAuthMe() {
+  return req('/api/auth/me');
+}
+
 // ── Action Plans ────────────────────────────────────────────────────────────
 
 export function fetchActionPlans() {

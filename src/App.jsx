@@ -3,7 +3,8 @@ import { createPortal } from "react-dom";
 import { parseLW321 } from "./lw321Parser.js";
 import { parseCKPN } from "./ckpnParser.js";
 import { parseRecoveryPH } from "./recoveryPhParser.js";
-import { fetchUploads, insertUpload, deleteUpload, fetchDebitur, bulkInsertDebitur, fetchActionPlans, saveActionPlan, updateActionPlan, deleteActionPlan, fetchCkpnSummary, bulkInsertCkpn, fetchRecPhSummary, bulkInsertRecPh, fetchCkpnTrend, fetchRecPhTrend, fetchMantriAgg, fetchMantriAggCross } from "./apiClient.js";
+import { fetchUploads, insertUpload, deleteUpload, fetchDebitur, bulkInsertDebitur, fetchActionPlans, saveActionPlan, updateActionPlan, deleteActionPlan, fetchCkpnSummary, bulkInsertCkpn, fetchRecPhSummary, bulkInsertRecPh, fetchCkpnTrend, fetchRecPhTrend, fetchMantriAgg, fetchMantriAggCross, fetchAuthMe } from "./apiClient.js";
+import { supabase } from "./supabaseClient.js";
 // Satu SheetJS saja: xlsx-js-style (superset xlsx + dukung styling). Mengimpor 'xlsx' juga akan
 // menimbulkan konflik global XLSX yang membuat style hilang saat di-bundle.
 import * as XLSX from 'xlsx-js-style';
@@ -95,6 +96,8 @@ const BETTER = { "2A":"1","2B":"2A","3":"2B","4":"3","5":"4" };
 const DEMO_KEPALA_UKER_KODE = "5037";
 
 const ALL_MENUS = ["dashboard","portfolio","ews","debitur","action","ckpn","kinerjaAO","kinerjaUnit","osKurang50","buatLaporan","secMantri","mantriRealisasi","mantriOs","mantriSmlRp","mantriNplRp","mantriSmlPct","mantriNplPct","mantriNetDgSml","mantriNetDgNpl","manajemen","pengaturan"];
+// Login pakai PN → dipetakan ke email Supabase "<PN>@ews.local". Ubah di sini bila domainnya diganti.
+const AUTH_EMAIL_DOMAIN = "ews.local";
 const ROLES = {
   pinca:      { id:"pinca",      nama:"Hery Santoso",   title:"Pimpinan Cabang",        icon:"userCircle", color:C.kpiBlue,
     desc:"Monitoring seluruh cabang & unit kerja",      akses:"Lihat semua data · read-only (mode pantau)",
@@ -4492,24 +4495,22 @@ function Sidebar({ page, setPage, menus, periode }) {
   );
 }
 
-function Login({ onLogin, localUsers }) {
-  const [username, setUsername] = useState("");
+function Login({ onLogin }) {
+  const [pn,       setPn]       = useState("");
   const [password, setPassword] = useState("");
   const [showPw,   setShowPw]   = useState(false);
   const [error,    setError]    = useState("");
-  const [demoOpen, setDemoOpen] = useState(false);
+  const [busy,     setBusy]     = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    const u = localUsers.find(u => u.username === username.trim().toLowerCase() && u.password === password);
-    if (!u)        { setError("Username atau password salah.");    return; }
-    if (!u.aktif)  { setError("Akun tidak aktif. Hubungi IT.");   return; }
-    setError(""); onLogin(u);
+    if (busy) return;
+    const p = pn.trim();
+    if (!p || !password) { setError("PN dan password wajib diisi."); return; }
+    setBusy(true); setError("");
+    const err = await onLogin(p, password);
+    if (err) { setError(err); setBusy(false); } // sukses → App melepas komponen ini
   };
-
-  const ROLE_LABEL = { superadmin:"Super Admin IT", admin:"Admin IT", pinca:"Pimpinan Cabang", mb:"Manajer Bisnis", kepalaUnit:"Kepala Unit", ao:"AO / Mantri", collection:"Collection Officer" };
-  const grouped = ["superadmin","admin","pinca","mb","kepalaUnit","ao","collection"]
-    .map(r=>({ role:r, users:localUsers.filter(u=>u.role===r && u.aktif) })).filter(g=>g.users.length);
 
   const inp = (extra={}) => ({
     padding:"10px 12px", border:`1.5px solid ${error?C.red:C.border}`, borderRadius:8,
@@ -4520,9 +4521,7 @@ function Login({ onLogin, localUsers }) {
     <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center",
       background:`linear-gradient(135deg, ${C.sidebar} 0%, #0E2747 100%)`, padding:20,
       fontFamily:"system-ui,'Segoe UI',Roboto,sans-serif" }}>
-      <div style={{ width:"100%", maxWidth:420, display:"flex", flexDirection:"column", gap:12 }}>
-
-        {/* Form login */}
+      <div style={{ width:"100%", maxWidth:420 }}>
         <div style={{ background:C.white, borderRadius:16, padding:"28px 26px", boxShadow:"0 20px 50px rgba(0,0,0,.3)" }}>
           <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:22 }}>
             <img src="https://res.cloudinary.com/dnacoymkh/image/upload/v1780721401/Logo_header_mini_blue_lengkap_wblfyh.png" alt="BRI" style={{ height:46, width:"auto" }} />
@@ -4532,14 +4531,14 @@ function Login({ onLogin, localUsers }) {
             </div>
           </div>
           <div style={{ fontSize:18, fontWeight:700, color:C.text, marginBottom:2 }}>Masuk</div>
-          <div style={{ fontSize:12.5, color:C.gray, marginBottom:20 }}>Gunakan username & password dari petugas IT</div>
+          <div style={{ fontSize:12.5, color:C.gray, marginBottom:20 }}>Gunakan PN &amp; password dari petugas IT cabang.</div>
 
           <form onSubmit={handleSubmit} style={{ display:"flex", flexDirection:"column", gap:14 }}>
             <div>
-              <label style={{ fontSize:12, fontWeight:600, color:C.textMd, display:"block", marginBottom:5 }}>Username</label>
-              <input type="text" autoFocus autoComplete="username"
-                value={username} onChange={e=>{ setUsername(e.target.value); setError(""); }}
-                placeholder="contoh: hery.santoso"
+              <label style={{ fontSize:12, fontWeight:600, color:C.textMd, display:"block", marginBottom:5 }}>PN (Nomor Personel)</label>
+              <input type="text" autoFocus autoComplete="username" inputMode="numeric"
+                value={pn} onChange={e=>{ setPn(e.target.value.replace(/\s/g,"")); setError(""); }}
+                placeholder="contoh: 90188658"
                 style={inp()} />
             </div>
             <div>
@@ -4559,10 +4558,10 @@ function Login({ onLogin, localUsers }) {
             {error && (
               <div style={{ fontSize:12.5, color:C.red, background:C.redLt, padding:"9px 12px", borderRadius:7, fontWeight:500 }}>{error}</div>
             )}
-            <button type="submit"
+            <button type="submit" disabled={busy}
               style={{ width:"100%", padding:"11px", background:C.navy, color:C.white, border:"none",
-                borderRadius:9, fontSize:14, fontWeight:700, cursor:"pointer", marginTop:2 }}>
-              Masuk
+                borderRadius:9, fontSize:14, fontWeight:700, cursor:busy?"default":"pointer", opacity:busy?.7:1, marginTop:2 }}>
+              {busy ? "Memverifikasi…" : "Masuk"}
             </button>
           </form>
 
@@ -4570,45 +4569,6 @@ function Login({ onLogin, localUsers }) {
             Lupa password? Hubungi petugas IT cabang.
           </div>
         </div>
-
-        {/* Demo Cepat */}
-        <div style={{ background:"rgba(255,255,255,.08)", borderRadius:12, border:"1px solid rgba(255,255,255,.13)", overflow:"hidden" }}>
-          <button onClick={()=>setDemoOpen(o=>!o)}
-            style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
-              padding:"11px 16px", background:"none", border:"none", cursor:"pointer", color:"rgba(255,255,255,.85)", fontSize:13, fontWeight:600 }}>
-            <span>Demo Cepat — pilih akun</span>
-            <Ic n={demoOpen?"chevronD":"chevronR"} size={16} style={{ color:"rgba(255,255,255,.6)" }} />
-          </button>
-          {demoOpen && (
-            <div style={{ padding:"0 10px 10px", display:"flex", flexDirection:"column", gap:2 }}>
-              {grouped.map(g=>(
-                <div key={g.role}>
-                  <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,.45)", textTransform:"uppercase",
-                    letterSpacing:.6, padding:"8px 4px 4px" }}>{ROLE_LABEL[g.role]}</div>
-                  {g.users.map(u=>(
-                    <button key={u.id} onClick={()=>onLogin(u)}
-                      style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between",
-                        padding:"8px 10px", background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.09)",
-                        borderRadius:8, cursor:"pointer", textAlign:"left", marginBottom:3 }}
-                      onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.14)"}
-                      onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.06)"}>
-                      <div>
-                        <div style={{ fontSize:12.5, fontWeight:600, color:"#fff" }}>{u.nama}</div>
-                        <div style={{ fontSize:10.5, color:"rgba(255,255,255,.5)", fontFamily:"monospace" }}>
-                          {u.username} · {u.password}
-                        </div>
-                      </div>
-                      {u.uker && <div style={{ fontSize:10, color:"rgba(255,255,255,.4)", flexShrink:0, marginLeft:8 }}>
-                        {UKER.find(uk=>uk.kode===u.uker)?.nama||""}
-                      </div>}
-                    </button>
-                  ))}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
       </div>
     </div>
   );
@@ -4636,6 +4596,7 @@ export default function App() {
   const [dbProgress, setDbProgress] = useState(0);
   const [dbProgressLabel, setDbProgressLabel] = useState("");
   const [localUsers, setLocalUsers] = useState(USERS);
+  const [authChecking, setAuthChecking] = useState(Boolean(supabase)); // true saat memulihkan sesi awal
 
   // Fungsi inti: load debitur untuk upload tertentu (cek IDB cache dulu)
   const loadDebiturForUpload = async (upload, uploadHistory, uploadHistoryAll = []) => {
@@ -4968,20 +4929,62 @@ export default function App() {
   }, [filters, perms, sourceDebitur, currentUser]);
   const m = useMemo(()=>buildModel(list, filters.periode, uploadedData?.uploadHistory, uploadedData?.uploadHistoryAll), [list, filters.periode, uploadedData?.uploadHistory, uploadedData?.uploadHistoryAll]);
 
-  const handleLogin = (user) => {
+  // Masuk ke aplikasi setelah profil (role) didapat dari backend.
+  const enterWithProfile = (profile) => {
+    const user = { id:profile.id, pn:profile.pn, nama:profile.nama, username:profile.username, role:profile.role, uker:profile.uker ?? null, aoId:profile.ao_id ?? null };
     setCurrentUser(user); setRole(user.role); setPage("dashboard"); setProfileOpen(false);
+    if (user.role==="ao")   setFilters({ uker:user.uker||"semua", ao:user.aoId||"semua", segment:"semua", periode:"Jun 2026" });
+    else if (user.uker)     setFilters({ uker:user.uker, ao:"semua", segment:"semua", periode:"Jun 2026" });
+    else                    setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Jun 2026" });
     setDbLoading(true); setDbProgress(0);
-    if (user.role==="ao")         setFilters({ uker:user.uker||"semua", ao:user.aoId||"semua", segment:"semua", periode:"Jun 2026" });
-    else if (user.uker)           setFilters({ uker:user.uker, ao:"semua", segment:"semua", periode:"Jun 2026" });
-    else                          setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Jun 2026" });
-    loadLatestData();
-    loadCkpnData();
-    loadRecPhData();
-    loadActionPlans();
+    loadLatestData(); loadCkpnData(); loadRecPhData(); loadActionPlans();
   };
-  const handleLogout = () => { setCurrentUser(null); setRole(null); setPage("dashboard"); setProfileOpen(false); setCkpnData(null); setRecPhData(null); setMantriSnaps(null); setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" }); };
 
-  if (!perms) return <Login onLogin={handleLogin} localUsers={localUsers} />;
+  // Login: PN → email Supabase → verifikasi → ambil profil (role) dari tabel MySQL users.
+  const doLogin = async (pnInput, password) => {
+    if (!supabase) return "Autentikasi belum dikonfigurasi. Hubungi IT.";
+    const { error } = await supabase.auth.signInWithPassword({ email:`${pnInput}@${AUTH_EMAIL_DOMAIN}`, password });
+    if (error) return "PN atau password salah.";
+    const { data: profile } = await fetchAuthMe();
+    if (!profile) { await supabase.auth.signOut(); return "Akun tidak terdaftar atau nonaktif. Hubungi IT."; }
+    enterWithProfile(profile);
+    return null;
+  };
+
+  const handleLogout = async () => {
+    if (supabase) { try { await supabase.auth.signOut(); } catch { /* */ } }
+    setCurrentUser(null); setRole(null); setPage("dashboard"); setProfileOpen(false);
+    setCkpnData(null); setRecPhData(null); setMantriSnaps(null);
+    setFilters({ uker:"semua", ao:"semua", segment:"semua", periode:"Mei 2026" });
+  };
+
+  // Pulihkan sesi saat halaman dibuka; keluar otomatis bila sesi berakhir.
+  useEffect(() => {
+    if (!supabase) { setAuthChecking(false); return; }
+    let active = true;
+    (async () => {
+      try {
+        const { data:{ session } } = await supabase.auth.getSession();
+        if (active && session) {
+          const { data: profile } = await fetchAuthMe();
+          if (active && profile) enterWithProfile(profile);
+        }
+      } catch { /* */ }
+      if (active) setAuthChecking(false);
+    })();
+    const { data:{ subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") { setCurrentUser(null); setRole(null); }
+    });
+    return () => { active = false; subscription?.unsubscribe(); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (authChecking) return (
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100vh", background:C.bg, gap:12 }}>
+      <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>EWS-CKPN</div>
+      <div style={{ fontSize:12.5, color:C.gray }}>Memeriksa sesi…</div>
+    </div>
+  );
+  if (!perms) return <Login onLogin={doLogin} />;
 
   if (dbLoading) return (
     <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100vh", background:C.bg, gap:20 }}>
@@ -5119,28 +5122,6 @@ export default function App() {
                     {currentUser?.uker && <div style={{ fontSize:11, color:C.gray, marginTop:1 }}>{UKER.find(uk=>uk.kode===currentUser.uker)?.nama||currentUser.uker}</div>}
                   </div>
                   <div style={{ padding:"6px 8px" }}>
-                    <div style={{ fontSize:10, fontWeight:700, color:C.gray, letterSpacing:.5, textTransform:"uppercase", padding:"4px 6px 6px" }}>Ganti Akun Demo</div>
-                    {(()=>{
-                      const RLABEL = { admin:"Admin IT", pinca:"Pimpinan Cabang", mb:"Manajer Bisnis", kepalaUnit:"Kepala Unit", ao:"AO / Mantri", collection:"Collection" };
-                      const RCOLOR = { admin:C.gray, pinca:C.kpiBlue, mb:C.kpiPurple, kepalaUnit:C.kpiTeal, ao:C.kpiTeal, collection:C.kpiAmber };
-                      return localUsers.filter(u=>u.aktif).map(u=>(
-                        <div key={u.id} onClick={()=>{ handleLogin(u); setProfileOpen(false); }}
-                          style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 8px", borderRadius:7, cursor:"pointer",
-                            background: u.id===currentUser?.id ? C.grayLt : "transparent" }}
-                          onMouseEnter={e=>e.currentTarget.style.background=C.grayLt}
-                          onMouseLeave={e=>e.currentTarget.style.background=u.id===currentUser?.id?C.grayLt:"transparent"}>
-                          <div style={{ width:26, height:26, borderRadius:"50%", background:RCOLOR[u.role]||C.gray, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:11, fontWeight:700 }}>
-                            {u.nama.charAt(0)}
-                          </div>
-                          <div style={{ minWidth:0 }}>
-                            <div style={{ fontSize:12, fontWeight:600, color:C.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{u.nama}</div>
-                            <div style={{ fontSize:10.5, color:RCOLOR[u.role]||C.gray, fontWeight:500 }}>{RLABEL[u.role]||u.role}</div>
-                          </div>
-                          {u.id===currentUser?.id && <div style={{ marginLeft:"auto", fontSize:10, color:C.gray, flexShrink:0 }}>●</div>}
-                        </div>
-                      ));
-                    })()}
-                    <div style={{ borderTop:`1px solid ${C.border}`, margin:"4px 0" }} />
                     <div onClick={handleLogout}
                       style={{ padding:"9px 12px", textAlign:"center", color:C.red, fontSize:13, fontWeight:700, cursor:"pointer", borderRadius:7 }}
                       onMouseEnter={e=>e.currentTarget.style.background=C.redLt}
