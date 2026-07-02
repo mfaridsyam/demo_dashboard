@@ -164,7 +164,8 @@ async function idbSet(key,val) {
 
 const fNum  = (n)=>Math.round(n).toLocaleString("id-ID");
 const fMil  = (jt)=>"Rp "+(jt/1000).toLocaleString("id-ID",{minimumFractionDigits:2,maximumFractionDigits:2})+" M";
-const fJt   = (jt)=>"Rp "+Math.round(jt).toLocaleString("id-ID")+" Jt";
+// Potong ke Juta (truncate, TIDAK dibulatkan): 26.693,92 Jt → "26.693 Jt", sesuai angka riil di file.
+const fJt   = (jt)=>"Rp "+Math.trunc(jt).toLocaleString("id-ID")+" Jt";
 const fFull = (jt)=>"Rp "+Math.round(jt*1e6).toLocaleString("id-ID");
 const fPct  = (x,d=2)=>x.toLocaleString("id-ID",{minimumFractionDigits:d,maximumFractionDigits:d})+"%";
 const fMilV = (v)=>v.toLocaleString("id-ID",{minimumFractionDigits:1,maximumFractionDigits:1})+" M";
