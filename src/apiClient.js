@@ -1,8 +1,18 @@
-const port = import.meta.env.VITE_API_PORT || '3001';
-const BASE_URL = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:${port}`;
+import { supabase } from './supabaseClient';
+
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 
 async function req(path, opts = {}) {
-  const res = await fetch(`${BASE_URL}${path}`, opts);
+  let token = null;
+  if (supabase) {
+    const { data } = await supabase.auth.getSession();
+    token = data.session?.access_token;
+  }
+  const headers = {
+    ...opts.headers,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  const res = await fetch(`${BASE_URL}${path}`, { ...opts, headers });
   return res.json();
 }
 
