@@ -1929,7 +1929,7 @@ function KinerjaAO({ m, list, plans, goKinerjaDebitur }) {
     { key:"nama",     label:"RM/Mantri",        align:"left",  type:"text", get:k=>k.nama||"-" },
     { key:"pn",       label:"PN",               align:"left",  type:"text", get:k=>k.pn||"-" },
     { key:"uker",     label:"Unit Kerja",       align:"left",  type:"text", get:k=>shortUker(k.uker)||"-" },
-    { key:"osJt",     label:"Outstanding (Jt)", align:"right", type:"num",  get:k=>Math.round(k.osJt) },
+    { key:"osJt",     label:"Outstanding (Jt)", align:"right", type:"num",  get:k=>Math.trunc(k.osJt) },
     { key:"deb",      label:"Jml Debitur",      align:"right", type:"num",  get:k=>k.deb },
     { key:"tinggi",   label:"Risiko Tinggi",    align:"right", type:"num",  get:k=>k.tinggi },
     { key:"action",   label:"Action Plan",      align:"right", type:"num",  get:k=>k.apTotal },
@@ -2259,10 +2259,10 @@ function KinerjaUnit({ m, list, preset }) {
   // Kolom tabel Rekap Kinerja per Unit Kerja (dipakai render + ekspor)
   const ukCols = [
     { key:"nama",     label:"Unit Kerja",        align:"left",  type:"text", get:u=>u.nama,            render:u=>u.nama },
-    { key:"osJt",     label:"Outstanding (Jt)",  align:"right", type:"num",  get:u=>Math.round(u.osJt), render:u=>fJt(u.osJt) },
+    { key:"osJt",     label:"Outstanding (Jt)",  align:"right", type:"num",  get:u=>Math.trunc(u.osJt), render:u=>fJt(u.osJt) },
     { key:"deb",      label:"Debitur",           align:"right", type:"num",  get:u=>u.deb,             render:u=>fNum(u.deb) },
     { key:"npl",      label:"NPL Ratio (%)",     align:"right", type:"pct",  get:u=>+u.npl.toFixed(2), render:u=>fPct(u.npl,1) },
-    { key:"ckpn",     label:"CKPN (Jt)",         align:"right", type:"num",  get:u=>Math.round(u.ckpn), render:u=>fJt(u.ckpn) },
+    { key:"ckpn",     label:"CKPN (Jt)",         align:"right", type:"num",  get:u=>Math.trunc(u.ckpn), render:u=>fJt(u.ckpn) },
     { key:"recovery", label:"Recovery Rate (%)", align:"right", type:"pct",  get:u=>u.recovery,        render:u=>u.recovery+"%" },
   ];
   const ukExportExcel = () => {
@@ -2321,10 +2321,10 @@ function KinerjaUnit({ m, list, preset }) {
     { key:"nama", label:"RM/Mantri",        align:"left",  type:"text", get:a=>a.key==="__none__"?"(Tanpa RM/Mantri)":a.nama },
     { key:"pn",   label:"PN",               align:"left",  type:"text", get:a=>a.pn||"-" },
     { key:"deb",  label:"Debitur",          align:"right", type:"num",  get:a=>a.deb },
-    { key:"osJt", label:"Outstanding (Jt)", align:"right", type:"num",  get:a=>Math.round(a.osJt) },
+    { key:"osJt", label:"Outstanding (Jt)", align:"right", type:"num",  get:a=>Math.trunc(a.osJt) },
     { key:"kol",  label:"Kol Bermasalah",   align:"left",  type:"text", get:a=>`${a.tinggi} tinggi · ${a.sedang} sedang` },
     { key:"npl",  label:"NPL Ratio (%)",    align:"right", type:"pct",  get:a=>+a.npl.toFixed(2) },
-    { key:"ckpn", label:"CKPN (Jt)",        align:"right", type:"num",  get:a=>Math.round(a.ckpn) },
+    { key:"ckpn", label:"CKPN (Jt)",        align:"right", type:"num",  get:a=>Math.trunc(a.ckpn) },
   ];
   const mantriKpiExp = () => (selUker ? [
     { label:"Total Debitur", val:fNum(selUker.deb) },
@@ -2422,7 +2422,7 @@ function KinerjaUnit({ m, list, preset }) {
     { key:"cif",     label:"CIF",              align:"left",   type:"text", get:d=>d.cif },
     { key:"nama",    label:"Nama Debitur",     align:"left",   type:"text", get:d=>d.nama },
     { key:"sektor",  label:"Sektor Usaha",     align:"left",   type:"text", get:d=>d.sektor||"-" },
-    { key:"osJt",    label:"Outstanding (Jt)", align:"right",  type:"num",  get:d=>Math.round(d.osJt) },
+    { key:"osJt",    label:"Outstanding (Jt)", align:"right",  type:"num",  get:d=>Math.trunc(d.osJt) },
     { key:"kol",     label:"Kol",              align:"center", type:"text", get:d=>`Kol ${d.kol}` },
     { key:"restruk", label:"Restruk",          align:"center", type:"text", get:d=>d.flagRestruk==='Y'?'Y':'N' },
     { key:"dpd",     label:"DPD",              align:"right",  type:"num",  get:d=>d.dpd||0 },
@@ -2826,18 +2826,18 @@ function downloadReport(type, m, list) {
     addSheet("Per Unit Kerja", [
       [`PORTOFOLIO PER UNIT KERJA — ${tgl}`],[],
       ["No","Kode","Nama Unit Kerja","Outstanding (Jt)","Jml Debitur","Risiko Tinggi","NPL Ratio (%)","CKPN (Jt)","Recovery (%)"],
-      ...m.perUker.map((u,i)=>[i+1, u.kode, u.nama, Math.round(u.osJt), u.deb, u.tinggi, +u.npl.toFixed(2), Math.round(u.ckpn), u.recovery]),
-      [],[" TOTAL","","",Math.round(m.totalOsJt), m.totalDeb,"",+m.npl.toFixed(2), Math.round(m.ckpnExisting),""],
+      ...m.perUker.map((u,i)=>[i+1, u.kode, u.nama, Math.trunc(u.osJt), u.deb, u.tinggi, +u.npl.toFixed(2), Math.trunc(u.ckpn), u.recovery]),
+      [],[" TOTAL","","",Math.trunc(m.totalOsJt), m.totalDeb,"",+m.npl.toFixed(2), Math.trunc(m.ckpnExisting),""],
     ], [4,8,22,16,12,12,13,12,12]);
     addSheet("Daftar Debitur", [
       [`DAFTAR DEBITUR — ${tgl}`],[],
       ["No","CIF","Nama Debitur","Unit Kerja","RM/Mantri","PN","Segment","Sektor","Outstanding (Jt)","Kolektibilitas","DPD","Status Risiko"],
-      ...list.map((d,i)=>[i+1, d.cif, d.nama, d.ukerNama, d.ao, d.pn||"", d.segment, d.sektor, Math.round(d.osJt), d.kol, d.dpd, risikoLabel[d.tier]||d.tier]),
+      ...list.map((d,i)=>[i+1, d.cif, d.nama, d.ukerNama, d.ao, d.pn||"", d.segment, d.sektor, Math.trunc(d.osJt), d.kol, d.dpd, risikoLabel[d.tier]||d.tier]),
     ], [4,12,30,20,25,10,10,12,16,12,6,14]);
     addSheet("Distribusi Kolektibilitas", [
       [`DISTRIBUSI KOLEKTIBILITAS — ${tgl}`],[],
       ["Kolektibilitas","Label","Jumlah Debitur","Persentase (%)","Outstanding (Jt)"],
-      ...m.kol.map(k=>[k.kol, k.legend, k.value, +k.pct.toFixed(2), Math.round(k.osJt)]),
+      ...m.kol.map(k=>[k.kol, k.legend, k.value, +k.pct.toFixed(2), Math.trunc(k.osJt)]),
     ], [14,10,16,16,16]);
     XLSX.writeFile(wb, `Portofolio_Kredit_${fn}.xlsx`);
   }
@@ -2857,7 +2857,7 @@ function downloadReport(type, m, list) {
     addSheet("Debitur Risiko Tinggi", [
       [`DEBITUR RISIKO TINGGI — ${tgl}`],[],
       ["No","CIF","Nama Debitur","Unit Kerja","RM/Mantri","PN","Outstanding (Jt)","DPD","Kolektibilitas","Tunggakan Est. (Jt)"],
-      ...tinggiList.map((d,i)=>[i+1, d.cif, d.nama, d.ukerNama, d.ao, d.pn||"", Math.round(d.osJt), d.dpd, d.kol, Math.round(d.tunggakanTotal||0)]),
+      ...tinggiList.map((d,i)=>[i+1, d.cif, d.nama, d.ukerNama, d.ao, d.pn||"", Math.trunc(d.osJt), d.dpd, d.kol, Math.trunc(d.tunggakanTotal||0)]),
     ], [4,12,30,20,25,10,16,6,12,18]);
     addSheet("EWS Per Unit Kerja", [
       [`EWS PER UNIT KERJA — ${tgl}`],[],
@@ -2906,27 +2906,27 @@ function downloadReport(type, m, list) {
       ["LAPORAN SIMULASI CKPN — BO POLEWALI"],
       [`Tanggal: ${tgl}`],[],
       ["Indikator","Nilai (Jt)","Keterangan"],
-      ["CKPN Existing", Math.round(m.ckpnExisting), "Berdasarkan kolektibilitas saat ini"],
-      ["CKPN Setelah Action Plan", Math.round(m.ckpnAfter), "Estimasi jika action plan berhasil"],
-      ["Potensi Penghematan", Math.round(m.ckpnSaving), `${m.savingPct.toFixed(1)}% dari CKPN Existing`],
+      ["CKPN Existing", Math.trunc(m.ckpnExisting), "Berdasarkan kolektibilitas saat ini"],
+      ["CKPN Setelah Action Plan", Math.trunc(m.ckpnAfter), "Estimasi jika action plan berhasil"],
+      ["Potensi Penghematan", Math.trunc(m.ckpnSaving), `${m.savingPct.toFixed(1)}% dari CKPN Existing`],
       ["Coverage Rate CKPN (%)", covPct, "CKPN Existing / Total Outstanding × 100"],
-      ["Total Outstanding", Math.round(m.totalOsJt), "Basis perhitungan"],
+      ["Total Outstanding", Math.trunc(m.totalOsJt), "Basis perhitungan"],
     ], [30,14,38]);
     addSheet("CKPN Per Unit Kerja", [
       [`CKPN PER UNIT KERJA — ${tgl}`],[],
       ["No","Unit Kerja","Outstanding (Jt)","CKPN Existing (Jt)","Coverage (%)","Recovery Rate (%)"],
-      ...m.perUker.map((u,i)=>[i+1, u.nama, Math.round(u.osJt), Math.round(u.ckpn), u.osJt ? +((u.ckpn/u.osJt)*100).toFixed(2) : 0, u.recovery]),
-      [],[" TOTAL","",Math.round(m.totalOsJt), Math.round(m.ckpnExisting), covPct,""],
+      ...m.perUker.map((u,i)=>[i+1, u.nama, Math.trunc(u.osJt), Math.trunc(u.ckpn), u.osJt ? +((u.ckpn/u.osJt)*100).toFixed(2) : 0, u.recovery]),
+      [],[" TOTAL","",Math.trunc(m.totalOsJt), Math.trunc(m.ckpnExisting), covPct,""],
     ], [4,22,16,18,13,16]);
     addSheet("CKPN Per Kolektibilitas", [
       [`CKPN PER KOLEKTIBILITAS — ${tgl}`],[],
       ["Kol","Label","Coverage Rate","Jml Debitur","Outstanding (Jt)","CKPN (Jt)"],
-      ...m.kol.map(k=>{ const cov={1:0.01,"2A":0.05,"2B":0.15,3:0.5,4:0.75,5:1.0}[k.kol]||0; return [k.kol, k.legend, `${(cov*100).toFixed(0)}%`, k.value, Math.round(k.osJt), Math.round(k.osJt*cov)]; }),
+      ...m.kol.map(k=>{ const cov={1:0.01,"2A":0.05,"2B":0.15,3:0.5,4:0.75,5:1.0}[k.kol]||0; return [k.kol, k.legend, `${(cov*100).toFixed(0)}%`, k.value, Math.trunc(k.osJt), Math.trunc(k.osJt*cov)]; }),
     ], [6,10,13,14,16,14]);
     addSheet("Top Kontributor CKPN", [
       [`TOP KONTRIBUTOR CKPN — ${tgl}`],[],
       ["No","Nama Debitur","Outstanding (Jt)","Kol","CKPN Existing (Jt)","Pot. Saving (Jt)","% Saving"],
-      ...m.ckpnDebitur.map((d,i)=>[i+1, d.nama, Math.round(d.osJt), d.kol, Math.round(d.ckpn), Math.round(d.saving), +d.pct.toFixed(1)]),
+      ...m.ckpnDebitur.map((d,i)=>[i+1, d.nama, Math.trunc(d.osJt), d.kol, Math.trunc(d.ckpn), Math.trunc(d.saving), +d.pct.toFixed(1)]),
     ], [4,30,16,6,18,16,10]);
     XLSX.writeFile(wb, `SimulasiCKPN_${fn}.xlsx`);
   }
@@ -3065,8 +3065,8 @@ function OsKurang50({ list, m }) {
     { key:"nama",    label:"Nama Debitur",     align:"left",   type:"text", get:g=>g.nama },
     { key:"ao",      label:"RM/Mantri",        align:"left",   type:"text", get:g=>g.ao },
     { key:"sektor",  label:"Sektor",           align:"left",   type:"text", get:g=>g.sektor },
-    { key:"os",      label:"Outstanding (Jt)", align:"right",  type:"num",  get:g=>Math.round(g.totalOsJt) },
-    { key:"plafon",  label:"Plafon (Jt)",      align:"right",  type:"num",  get:g=>Math.round(sumPlafon(g)) },
+    { key:"os",      label:"Outstanding (Jt)", align:"right",  type:"num",  get:g=>Math.trunc(g.totalOsJt) },
+    { key:"plafon",  label:"Plafon (Jt)",      align:"right",  type:"num",  get:g=>Math.trunc(sumPlafon(g)) },
     { key:"pct",     label:"OS/Plafon (%)",    align:"right",  type:"num",  get:g=>+pctVal(g).toFixed(1) },
     { key:"kol",     label:"Kol",              align:"center", type:"text", get:g=>g.kol },
     { key:"restruk", label:"Restruk",          align:"center", type:"text", get:g=>g.flagRestruk==='Y'?'Y':'N' },
@@ -3875,12 +3875,12 @@ const REPORT_COLS = [
   { key:"pn",        label:"PN",               get:g=>g.pn||"" },
   { key:"segment",   label:"Segment",          get:g=>g.segment },
   { key:"sektor",    label:"Sektor",           get:g=>g.sektor },
-  { key:"osJt",      label:"Outstanding (Jt)", get:g=>Math.round(g.totalOsJt), num:true },
+  { key:"osJt",      label:"Outstanding (Jt)", get:g=>Math.trunc(g.totalOsJt), num:true },
   { key:"kol",       label:"Kol",              get:g=>g.kol },
   { key:"restruk",   label:"Restruk",          get:g=>g.flagRestruk },
   { key:"dpd",       label:"DPD",              get:g=>g.dpd, num:true },
   { key:"tier",      label:"Status Risiko",    get:g=>risikoLabel[g.tier]||g.tier },
-  { key:"tunggakan", label:"Tunggakan (Jt)",   get:g=>Math.round(g.tunggakan||0), num:true },
+  { key:"tunggakan", label:"Tunggakan (Jt)",   get:g=>Math.trunc(g.tunggakan||0), num:true },
 ];
 const REPORT_DEFAULT = ["cif","nama","ukerNama","ao","osJt","kol","dpd","tier"];
 
