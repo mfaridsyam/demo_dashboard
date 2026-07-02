@@ -4284,11 +4284,12 @@ function buildMantriData(reportId, snaps) {
   };
 
   // Semesta unit/mantri = snapshot terkini ("sesuai kelolaan mantri saat ini").
-  // Hanya tampilkan UNIT (kode diawali '5') — KC/KCP tidak masuk laporan mantri per unit.
+  // Hanya BRI Unit (nama diawali "UNIT") — KC/KCP dikecualikan dari laporan mantri per unit.
+  // Catatan: kode unit tidak selalu diawali '5' (mis. PAJALELE 7490, MAMBI 8026).
   const hasKode = cfg.idCols.some(c => c.key === "kode");
   const unitMap = {};
   Object.values(terkini?.byMantri || {}).forEach(r => {
-    if (!String(r.kode_uker||"").startsWith("5")) return;
+    if (!/^unit\b/i.test(String(r.uker_nama||"").trim())) return;
     const U = unitMap[r.kode_uker] || (unitMap[r.kode_uker] = { kode:r.kode_uker, nama:shortUker(r.uker_nama||r.kode_uker), mantri:[] });
     U.mantri.push({ key:`${r.kode_uker}|${r.ao_id}`, pn:r.pn||r.ao_id||"", nama:r.ao||"-", os:Number(r.os)||0 });
   });
