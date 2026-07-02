@@ -4784,12 +4784,14 @@ export default function App() {
         kemarin   && { key:'kemarin',   id:kemarin.id,   d:kemarin.d },
         { key:'terkini', id:terkini.id, d:terkini.d },
       ].filter(Boolean).filter((r,i,arr) => arr.findIndex(x=>x.id===r.id)===i);
-      // Gunakan agg-cross: kelolaan TERKINI sebagai acuan, OS diambil dari tiap snapshot historis.
-      // Ini memastikan POSISI historis per mantri konsisten dengan kelolaan saat ini (sama seperti Kaka Mantri).
-      const terkiniRef = refDefs[refDefs.length - 1];
-      const refOnlyIds = refDefs.slice(0, -1).map(r => r.id);
-      const { data: crossData } = await fetchMantriAggCross(terkiniRef.id, refOnlyIds);
-      setMantriSnaps(refDefs.map(r => ({ key:r.key, label:fmt(r.d), date:r.d, byMantri:(crossData || {})[r.id] || {} })));
+      // Ambil agregat tiap snapshot secara terpisah (ringan: satu query per upload_id).
+      const aggById = {};
+      await Promise.all([...new Set(refDefs.map(r=>r.id))].map(async id => {
+        const { data } = await fetchMantriAgg(id);
+        const map = {}; (data||[]).forEach(row => { map[`${row.kode_uker}|${row.ao_id}`] = row; });
+        aggById[id] = map;
+      }));
+      setMantriSnaps(refDefs.map(r => ({ key:r.key, label:fmt(r.d), date:r.d, byMantri:aggById[r.id] || {} })));
     } catch (err) { console.warn('Gagal load snapshot mantri:', err); setMantriSnaps([]); }
   };
   // Muat lazy saat pertama masuk salah satu tab Data Mantri
